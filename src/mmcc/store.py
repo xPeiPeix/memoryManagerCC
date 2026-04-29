@@ -1,0 +1,291 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
+from .paths import (
+    PROJECTS_DIR,
+    decode_project_dir,
+    is_worktree_alias,
+    longest_common_prefix,
+    project_short_id,
+)
+
+VALID_TYPES = {"feedback", "user", "project", "reference"}
+
+
+class MemoryStoreError(Exception):
+    pass
+
+
+class NotFoundError(MemoryStoreError):
+    pass
+
+
+class AmbiguousRefError(MemoryStoreError):
+    def __init__(self, ref: str, candidates: list["MemoryEntry"]):
+        super().__init__(f"Ambiguous ref {ref!r}: {len(candidates)} candidates")
+        self.ref = ref
+        self.candidates = candidates
+
+
+@dataclass(frozen=True)
+class MemoryEntry:
+    project_id: str
+    project_path: str
+    filename: str
+    file_path: Path
+    name: str
+    description: str
+    type: str
+    origin_session_id: Optional[str]
+    body: str
+    mtime: float
+
+
+@dataclass(frozen=True)
+class ProjectInfo:
+    project_id: str
+    project_path: str
+    memory_dir: Optional[Path]
+    is_alias: bool
+    entry_count: int
+    has_index: bool
+    mtime: float
+
+
+_FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n(.*)$", re.DOTALL)
+_KEY_RE = re.compile(r"^([\w-]+):\s*(.*)$")
+
+
+def _parse_frontmatter(text: str) -> Optional[tuple[dict[str, str], str]]:
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        return None
+    fm: dict[str, str] = {}
+    for line in m.group(1).splitlines():
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        km = _KEY_RE.match(line)
+        if km:
+            key = km.group(1).strip()
+            val = km.group(2).strip()
+            if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+                val = val[1:-1]
+            fm[key] = val
+    return fm, m.group(2)
+
+
+def _name_from_filename(filename: str) -> str:
+    stem = filename[:-3] if filename.endswith(".md") else filename
+    for prefix in ("feedback_", "user_", "project_", "reference_"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+            break
+    return stem.replace("_", " ")
+
+
+class MemoryStore:
+    def __init__(self, projects_dir: Path | str = PROJECTS_DIR):
+        self.projects_dir = Path(projects_dir)
+        self._common_prefix_cache: Optional[str] = None
+
+    def parse_entry(self, file_path: Path) -> Optional[MemoryEntry]:
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError, PermissionError):
+            return None
+        parsed = _parse_frontmatter(text)
+        if parsed is None:
+            return None
+        fm, body = parsed
+        project_dir = file_path.parent.parent
+        project_id = project_dir.name
+        decoded = decode_project_dir(project_id) or project_id
+        try:
+            mtime = file_path.stat().st_mtime
+        except OSError:
+            mtime = 0.0
+        type_val = fm.get("type", "").lower()
+        if type_val not in VALID_TYPES:
+            type_val = "unknown"
+        return MemoryEntry(
+            project_id=project_id,
+            project_path=decoded,
+            filename=file_path.name,
+            file_path=file_path,
+            name=fm.get("name") or _name_from_filename(file_path.name),
+            description=fm.get("description", ""),
+            type=type_val,
+            origin_session_id=fm.get("originSessionId") or None,
+            body=body,
+            mtime=mtime,
+        )
+
+    def list_projects(self, *, include_aliases: bool = False, include_empty: bool = False) -> list[ProjectInfo]:
+        infos: list[ProjectInfo] = []
+        if not self.projects_dir.exists():
+            return infos
+        for proj_dir in sorted(self.projects_dir.iterdir(), key=lambda p: p.name):
+            if not proj_dir.is_dir():
+                continue
+            mem_dir = proj_dir / "memory"
+            if not mem_dir.exists():
+                continue
+            is_alias = is_worktree_alias(proj_dir)
+            if is_alias and not include_aliases:
+                continue
+            info = self._build_project_info(proj_dir, mem_dir, is_alias)
+            if info is None:
+                continue
+            if not include_empty and info.entry_count == 0:
+                continue
+            infos.append(info)
+        infos.sort(key=lambda p: -p.mtime)
+        return infos
+
+    def _build_project_info(self, proj_dir: Path, mem_dir: Path, is_alias: bool) -> Optional[ProjectInfo]:
+        try:
+            real_mem = mem_dir.resolve()
+        except OSError:
+            return None
+        entry_count = 0
+        has_index = False
+        latest_mtime = 0.0
+        try:
+            for f in real_mem.iterdir():
+                if not f.is_file() or not f.name.endswith(".md"):
+                    continue
+                if f.name == "MEMORY.md":
+                    has_index = True
+                    continue
+                entry_count += 1
+                try:
+                    latest_mtime = max(latest_mtime, f.stat().st_mtime)
+                except OSError:
+                    pass
+        except (OSError, PermissionError):
+            return None
+        project_id = proj_dir.name
+        return ProjectInfo(
+            project_id=project_id,
+            project_path=decode_project_dir(project_id) or project_id,
+            memory_dir=real_mem,
+            is_alias=is_alias,
+            entry_count=entry_count,
+            has_index=has_index,
+            mtime=latest_mtime,
+        )
+
+    def list_entries(self,
+                     *,
+                     project_id: Optional[str] = None,
+                     type_filter: Optional[str] = None) -> list[MemoryEntry]:
+        entries: list[MemoryEntry] = []
+        for proj in self.list_projects(include_aliases=False, include_empty=True):
+            if project_id is not None and not self._project_matches(proj, project_id):
+                continue
+            if proj.memory_dir is None:
+                continue
+            try:
+                files = sorted(proj.memory_dir.iterdir(), key=lambda f: f.name)
+            except (OSError, PermissionError):
+                continue
+            for f in files:
+                if not f.is_file() or not f.name.endswith(".md") or f.name == "MEMORY.md":
+                    continue
+                entry = self.parse_entry(f)
+                if entry is None:
+                    continue
+                if type_filter is not None and entry.type != type_filter:
+                    continue
+                entries.append(entry)
+        entries.sort(key=lambda e: -e.mtime)
+        return entries
+
+    def _project_matches(self, proj: ProjectInfo, query: str) -> bool:
+        if proj.project_id == query:
+            return True
+        if self.short_id(proj.project_id) == query:
+            return True
+        q = query.lower()
+        return q in proj.project_id.lower() or q in proj.project_path.lower()
+
+    def common_prefix(self) -> str:
+        if self._common_prefix_cache is not None:
+            return self._common_prefix_cache
+        if not self.projects_dir.exists():
+            self._common_prefix_cache = ""
+            return ""
+        ids = [d.name for d in self.projects_dir.iterdir() if d.is_dir()]
+        if len(ids) < 2:
+            self._common_prefix_cache = ""
+            return ""
+        from collections import Counter
+        groups = Counter(i[:3] for i in ids if len(i) >= 3)
+        if not groups:
+            self._common_prefix_cache = ""
+            return ""
+        majority, _ = groups.most_common(1)[0]
+        target = [i for i in ids if i.startswith(majority)]
+        target = [i for i in target if not any(j != i and j.startswith(i + "-") for j in target)]
+        self._common_prefix_cache = longest_common_prefix(target) if len(target) >= 2 else ""
+        return self._common_prefix_cache
+
+    def short_id(self, project_id: str) -> str:
+        return project_short_id(project_id, self.common_prefix())
+
+    def search(self, keyword: str, *,
+               in_body: bool = True,
+               in_title: bool = True,
+               in_description: bool = True,
+               type_filter: Optional[str] = None,
+               project_id: Optional[str] = None,
+               case_sensitive: bool = False) -> list[tuple[MemoryEntry, list[str]]]:
+        if not (in_body or in_title or in_description):
+            in_body = in_title = in_description = True
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            kw_re = re.compile(re.escape(keyword), flags)
+        except re.error:
+            return []
+        results: list[tuple[MemoryEntry, list[str]]] = []
+        for entry in self.list_entries(project_id=project_id, type_filter=type_filter):
+            matched: list[str] = []
+            hit = False
+            if in_title and kw_re.search(entry.name):
+                matched.append(f"name: {entry.name}")
+                hit = True
+            if in_description and entry.description and kw_re.search(entry.description):
+                matched.append(f"description: {entry.description}")
+                hit = True
+            if in_body:
+                body_hits = 0
+                for line in entry.body.splitlines():
+                    if kw_re.search(line):
+                        matched.append(line.strip())
+                        body_hits += 1
+                        hit = True
+                        if body_hits >= 3:
+                            break
+            if hit:
+                results.append((entry, matched[:3]))
+        results.sort(key=lambda r: (0 if r[0].type == "feedback" else 1, -r[0].mtime))
+        return results
+
+    def find(self, ref: str) -> MemoryEntry:
+        if ":" in ref:
+            project_part, filename = ref.split(":", 1)
+            target = filename if filename.endswith(".md") else filename + ".md"
+            entries = self.list_entries(project_id=project_part)
+            candidates = [e for e in entries if e.filename == target]
+        else:
+            target = ref if ref.endswith(".md") else ref + ".md"
+            candidates = [e for e in self.list_entries() if e.filename == target]
+        if not candidates:
+            raise NotFoundError(f"Memory not found: {ref}")
+        if len(candidates) > 1:
+            raise AmbiguousRefError(ref, candidates)
+        return candidates[0]
