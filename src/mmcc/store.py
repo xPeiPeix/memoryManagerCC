@@ -307,10 +307,49 @@ class MemoryStore:
                type_filter: Optional[str] = None,
                project_id: Optional[str] = None,
                case_sensitive: bool = False,
-               all_words: bool = False) -> list[tuple[MemoryEntry, list[str]]]:
+               all_words: bool = False,
+               fuzzy: bool = False) -> list[tuple[MemoryEntry, list[str]]]:
+        if all_words and fuzzy:
+            raise ValueError("all_words and fuzzy are mutually exclusive")
         if not (in_body or in_title or in_description):
             in_body = in_title = in_description = True
         flags = 0 if case_sensitive else re.IGNORECASE
+        if fuzzy:
+            import difflib
+            kw = keyword if case_sensitive else keyword.lower()
+            if not kw.strip():
+                return []
+            results: list[tuple[MemoryEntry, list[str]]] = []
+            for entry in self.list_entries(project_id=project_id, type_filter=type_filter):
+                haystacks: list[str] = []
+                if in_title:
+                    haystacks.append(entry.name)
+                if in_description and entry.description:
+                    haystacks.append(entry.description)
+                if in_body:
+                    haystacks.append(entry.body)
+                text = "\n".join(haystacks)
+                tokens = re.findall(r"[\w-]+", text)
+                if not tokens:
+                    continue
+                tokens_norm = tokens if case_sensitive else [t.lower() for t in tokens]
+                close = difflib.get_close_matches(kw, tokens_norm, n=1, cutoff=0.7)
+                if not close:
+                    continue
+                matched_norm = close[0]
+                try:
+                    idx = tokens_norm.index(matched_norm)
+                    matched_token = tokens[idx]
+                except ValueError:
+                    matched_token = matched_norm
+                snippet = matched_token
+                for line in text.splitlines():
+                    if matched_token in line:
+                        snippet = line.strip()
+                        break
+                results.append((entry, [f"~ {snippet}"]))
+            results.sort(key=lambda r: (0 if r[0].type == "feedback" else 1, -r[0].mtime))
+            return results
         if all_words:
             words = keyword.split()
             if not words:

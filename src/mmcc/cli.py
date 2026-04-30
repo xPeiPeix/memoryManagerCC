@@ -65,8 +65,11 @@ def _build_parser() -> argparse.ArgumentParser:
     s.add_argument("--description", action="store_true", help="Search description only (default: all)")
     s.add_argument("--type", choices=["feedback", "user", "project", "reference", "unknown"])
     s.add_argument("--case-sensitive", action="store_true")
-    s.add_argument("--all-words", action="store_true",
-                   help="Match all whitespace-separated words (AND semantics)")
+    s_mode = s.add_mutually_exclusive_group()
+    s_mode.add_argument("--all-words", action="store_true",
+                        help="Match all whitespace-separated words (AND semantics)")
+    s_mode.add_argument("--fuzzy", action="store_true",
+                        help="Fuzzy match via difflib (typo tolerance, cutoff 0.7)")
     s.add_argument("--limit", type=int, default=50)
 
     cat = sub.add_parser("cat", help="Show memory full content", parents=[common])
@@ -122,6 +125,7 @@ def _cmd_search(args: argparse.Namespace, store: MemoryStore) -> int:
         project_id=project,
         case_sensitive=args.case_sensitive,
         all_words=args.all_words,
+        fuzzy=args.fuzzy,
     )
     if args.limit > 0:
         results = results[: args.limit]

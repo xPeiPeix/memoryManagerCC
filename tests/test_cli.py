@@ -127,3 +127,31 @@ class TestSearchAllWords:
         )
         assert rc == 0
         assert "(no matches)" in out
+
+
+class TestSearchFuzzy:
+    def test_fuzzy_flag(self, mock_projects: Path, capsys):
+        rc, out, _ = _run(
+            ["--projects-dir", str(mock_projects),
+             "search", "shred_keyword", "--fuzzy"],
+            capsys,
+        )
+        assert rc == 0
+        assert "First feedback" in out
+
+    def test_fuzzy_no_match(self, mock_projects: Path, capsys):
+        rc, out, _ = _run(
+            ["--projects-dir", str(mock_projects),
+             "search", "zzqxyzgarbage", "--fuzzy"],
+            capsys,
+        )
+        assert rc == 0
+        assert "(no matches)" in out
+
+    def test_fuzzy_and_all_words_conflict(self, mock_projects: Path):
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--projects-dir", str(mock_projects),
+                "search", "anything", "--fuzzy", "--all-words",
+            ])
+        assert exc_info.value.code == 2

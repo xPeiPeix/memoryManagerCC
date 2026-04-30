@@ -243,6 +243,28 @@ class TestSearch:
         assert store.search("", all_words=True) == []
         assert store.search("   ", all_words=True) == []
 
+    def test_fuzzy_typo_match(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        results = store.search("shred_keyword", fuzzy=True)
+        names = {e.name for e, _ in results}
+        assert "First feedback" in names
+
+    def test_fuzzy_too_far(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        results = store.search("zzqxyzgarbage", fuzzy=True)
+        assert len(results) == 0
+
+    def test_fuzzy_with_type_filter(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        results = store.search("shred_keyword", fuzzy=True, type_filter="reference")
+        types = {e.type for e, _ in results}
+        assert types <= {"reference"}
+
+    def test_fuzzy_default_off(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        results = store.search("shred_keyword")
+        assert len(results) == 0
+
 
 class TestFind:
     def test_unique_filename(self, mock_projects: Path):
