@@ -305,3 +305,52 @@ class TestEditFrontmatterFlag:
         assert rc == 0
         assert called["argv"] is not None
         assert called["argv"][0] == "echo"
+
+
+class TestEditorLaunchErrors:
+    def test_prompt_body_handles_filenotfound(self, monkeypatch, capsys):
+        from mmcc import cli
+
+        def fake_run(*a, **kw):
+            raise FileNotFoundError("simulated missing editor")
+
+        monkeypatch.setenv("EDITOR", "fake-editor-xxx")
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.setattr("mmcc.cli.subprocess.run", fake_run)
+        result = cli._prompt_body_via_editor()
+        assert result is None
+        _, err = capsys.readouterr()
+        assert "Failed to launch" in err or "fake-editor-xxx" in err
+
+    def test_prompt_body_handles_oserror(self, monkeypatch, capsys):
+        from mmcc import cli
+
+        def fake_run(*a, **kw):
+            raise OSError("simulated permission denied")
+
+        monkeypatch.setenv("EDITOR", "denied-editor")
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.setattr("mmcc.cli.subprocess.run", fake_run)
+        result = cli._prompt_body_via_editor()
+        assert result is None
+        _, err = capsys.readouterr()
+        assert "Failed to launch" in err
+
+    def test_add_with_invalid_editor_returns_1_no_traceback(self, mock_projects: Path,
+                                                              monkeypatch, capsys):
+        def fake_run(*a, **kw):
+            raise FileNotFoundError("simulated missing editor")
+
+        monkeypatch.setenv("EDITOR", "no-such-editor-xyz")
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.setattr("mmcc.cli.subprocess.run", fake_run)
+        rc = main([
+            "--projects-dir", str(mock_projects),
+            "add",
+            "--type", "feedback",
+            "--name", "needs editor",
+            "--project", "D--test-normal",
+        ])
+        _, err = capsys.readouterr()
+        assert rc == 1
+        assert "Traceback" not in err

@@ -238,14 +238,29 @@ def _prompt_body_via_editor() -> Optional[str]:
     if not editor:
         print("No editor found. Set $EDITOR/$VISUAL or pass --body inline.", file=sys.stderr)
         return None
+    import shlex
     import tempfile
     with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False, encoding="utf-8") as f:
         f.write("# Type body below; lines starting with # will be stripped.\n")
         tmp = f.name
     try:
-        subprocess.run([editor, tmp], check=False)
-        with open(tmp, "r", encoding="utf-8") as fh:
-            raw = fh.read()
+        try:
+            parts = shlex.split(editor)
+        except ValueError:
+            parts = [editor]
+        if not parts:
+            parts = [editor]
+        try:
+            subprocess.run([*parts, tmp], check=False)
+        except (OSError, FileNotFoundError) as e:
+            print(f"Failed to launch {editor!r}: {e}", file=sys.stderr)
+            return None
+        try:
+            with open(tmp, "r", encoding="utf-8") as fh:
+                raw = fh.read()
+        except OSError as e:
+            print(f"Failed to read editor output: {e}", file=sys.stderr)
+            return None
         lines = [ln for ln in raw.splitlines() if not ln.startswith("#")]
         body = "\n".join(lines).strip()
         return body if body else None
