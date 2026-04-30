@@ -106,3 +106,24 @@ class TestSearchPositional:
             capsys,
         )
         assert rc == 0
+
+
+class TestSearchAllWords:
+    def test_all_words_flag(self, mock_projects: Path, capsys):
+        rc, out, _ = _run(
+            ["--projects-dir", str(mock_projects),
+             "search", "shared_keyword Why", "--all-words"],
+            capsys,
+        )
+        assert rc == 0
+        assert "First feedback" in out
+        assert "API docs link" not in out
+
+    def test_all_words_partial_skip(self, mock_projects: Path, capsys):
+        rc, out, _ = _run(
+            ["--projects-dir", str(mock_projects),
+             "search", "shared_keyword nonexistent_xyz", "--all-words"],
+            capsys,
+        )
+        assert rc == 0
+        assert "(no matches)" in out

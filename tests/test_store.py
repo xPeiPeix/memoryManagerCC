@@ -207,6 +207,42 @@ class TestSearch:
         results = store.search("中文")
         assert any("中文" in e.name for e, _ in results)
 
+    def test_all_words_and_match(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        results = store.search("shared_keyword Why", all_words=True)
+        names = {e.name for e, _ in results}
+        assert "First feedback" in names
+        assert "API docs link" not in names
+
+    def test_all_words_partial_skip(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        results = store.search("shared_keyword nonexistent_xyz", all_words=True)
+        assert len(results) == 0
+
+    def test_all_words_default_off(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        results = store.search("shared keyword")
+        names = {e.name for e, _ in results}
+        assert "First feedback" not in names
+        assert "API docs link" not in names
+
+    def test_all_words_with_type_filter(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        results = store.search("shared_keyword Why", all_words=True, type_filter="reference")
+        assert len(results) == 0
+
+    def test_all_words_case_sensitive(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        sensitive = store.search("SHARED_KEYWORD why", all_words=True, case_sensitive=True)
+        assert len(sensitive) == 0
+        insensitive = store.search("SHARED_KEYWORD why", all_words=True)
+        assert len(insensitive) >= 1
+
+    def test_all_words_empty(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        assert store.search("", all_words=True) == []
+        assert store.search("   ", all_words=True) == []
+
 
 class TestFind:
     def test_unique_filename(self, mock_projects: Path):

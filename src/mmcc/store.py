@@ -306,17 +306,53 @@ class MemoryStore:
                in_description: bool = True,
                type_filter: Optional[str] = None,
                project_id: Optional[str] = None,
-               case_sensitive: bool = False) -> list[tuple[MemoryEntry, list[str]]]:
+               case_sensitive: bool = False,
+               all_words: bool = False) -> list[tuple[MemoryEntry, list[str]]]:
         if not (in_body or in_title or in_description):
             in_body = in_title = in_description = True
         flags = 0 if case_sensitive else re.IGNORECASE
+        if all_words:
+            words = keyword.split()
+            if not words:
+                return []
+            try:
+                word_res = [re.compile(re.escape(w), flags) for w in words]
+            except re.error:
+                return []
+            results: list[tuple[MemoryEntry, list[str]]] = []
+            for entry in self.list_entries(project_id=project_id, type_filter=type_filter):
+                haystacks: list[str] = []
+                if in_title:
+                    haystacks.append(entry.name)
+                if in_description and entry.description:
+                    haystacks.append(entry.description)
+                if in_body:
+                    haystacks.append(entry.body)
+                combined = "\n".join(haystacks)
+                if not all(wr.search(combined) for wr in word_res):
+                    continue
+                matched: list[str] = []
+                seen: set[int] = set()
+                for line in combined.splitlines():
+                    if len(matched) >= 3:
+                        break
+                    for i, wr in enumerate(word_res):
+                        if i in seen:
+                            continue
+                        if wr.search(line):
+                            matched.append(line.strip())
+                            seen.add(i)
+                            break
+                results.append((entry, matched[:3]))
+            results.sort(key=lambda r: (0 if r[0].type == "feedback" else 1, -r[0].mtime))
+            return results
         try:
             kw_re = re.compile(re.escape(keyword), flags)
         except re.error:
             return []
-        results: list[tuple[MemoryEntry, list[str]]] = []
+        results = []
         for entry in self.list_entries(project_id=project_id, type_filter=type_filter):
-            matched: list[str] = []
+            matched = []
             hit = False
             if in_title and kw_re.search(entry.name):
                 matched.append(f"name: {entry.name}")
