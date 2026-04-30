@@ -31,6 +31,10 @@ class AmbiguousRefError(MemoryStoreError):
         self.candidates = candidates
 
 
+class EntryExistsError(MemoryStoreError):
+    pass
+
+
 @dataclass(frozen=True)
 class MemoryEntry:
     project_id: str
@@ -87,10 +91,19 @@ def _name_from_filename(filename: str) -> str:
     return stem.replace("_", " ")
 
 
+def _slugify(name: str) -> str:
+    s = name.strip().lower()
+    s = re.sub(r"[\s\-]+", "_", s)
+    s = re.sub(r"[^\w]", "", s, flags=re.UNICODE)
+    s = re.sub(r"_+", "_", s)
+    return s.strip("_")
+
+
 class MemoryStore:
     def __init__(self, projects_dir: Path | str = PROJECTS_DIR):
         self.projects_dir = Path(projects_dir)
         self._common_prefix_cache: Optional[str] = None
+        self._short_ids_cache: Optional[dict[str, str]] = None
 
     def parse_entry(self, file_path: Path) -> Optional[MemoryEntry]:
         try:
@@ -235,7 +248,69 @@ class MemoryStore:
         return self._common_prefix_cache
 
     def short_id(self, project_id: str) -> str:
-        return project_short_id(project_id, self.common_prefix())
+        sids = self._short_ids()
+        return sids.get(project_id, project_short_id(project_id, self.common_prefix()))
+
+    def _short_ids(self) -> dict[str, str]:
+        if self._short_ids_cache is not None:
+            return self._short_ids_cache
+        lcp = self.common_prefix()
+        ids: list[str] = []
+        if self.projects_dir.exists():
+            try:
+                for d in self.projects_dir.iterdir():
+                    if d.is_dir():
+                        ids.append(d.name)
+            except (OSError, PermissionError):
+                pass
+        layer1: dict[str, str] = {}
+        for pid in ids:
+            if lcp and pid.startswith(lcp):
+                rest = pid[len(lcp):]
+                layer1[pid] = rest if rest else pid
+            else:
+                layer1[pid] = pid
+        cats = self._compute_categories(list(layer1.values())) if lcp else []
+        layer2: dict[str, str] = {}
+        for pid, l1 in layer1.items():
+            stripped: Optional[str] = None
+            for cat in cats:
+                if l1.startswith(cat):
+                    tail = l1[len(cat):]
+                    if tail:
+                        stripped = tail
+                        break
+            layer2[pid] = stripped if stripped is not None else l1
+        if cats and len(set(layer2.values())) != len(layer2):
+            self._short_ids_cache = layer1
+        else:
+            self._short_ids_cache = layer2
+        return self._short_ids_cache
+
+    def _compute_categories(self, layer1_values: list[str]) -> list[str]:
+        from collections import defaultdict
+        groups: dict[str, list[str]] = defaultdict(list)
+        for v in layer1_values:
+            head = v.split("-", 1)[0]
+            groups[head].append(v)
+        cats: list[str] = []
+        for items in groups.values():
+            if len(items) < 2:
+                continue
+            items_filtered = [i for i in items if not any(j != i and j.startswith(i + "-") for j in items)]
+            if len(items_filtered) < 2:
+                continue
+            gprefix = longest_common_prefix(items_filtered)
+            if not gprefix:
+                continue
+            if not gprefix.endswith("-"):
+                idx = gprefix.rfind("-")
+                if idx < 0:
+                    continue
+                gprefix = gprefix[: idx + 1]
+            cats.append(gprefix)
+        cats.sort(key=len, reverse=True)
+        return cats
 
     def search(self, keyword: str, *,
                in_body: bool = True,
@@ -243,17 +318,92 @@ class MemoryStore:
                in_description: bool = True,
                type_filter: Optional[str] = None,
                project_id: Optional[str] = None,
-               case_sensitive: bool = False) -> list[tuple[MemoryEntry, list[str]]]:
+               case_sensitive: bool = False,
+               all_words: bool = False,
+               fuzzy: bool = False) -> list[tuple[MemoryEntry, list[str]]]:
+        if all_words and fuzzy:
+            raise ValueError("all_words and fuzzy are mutually exclusive")
         if not (in_body or in_title or in_description):
             in_body = in_title = in_description = True
         flags = 0 if case_sensitive else re.IGNORECASE
+        if fuzzy:
+            import difflib
+            kw = keyword if case_sensitive else keyword.lower()
+            if not kw.strip():
+                return []
+            results: list[tuple[MemoryEntry, list[str]]] = []
+            for entry in self.list_entries(project_id=project_id, type_filter=type_filter):
+                haystacks: list[str] = []
+                if in_title:
+                    haystacks.append(entry.name)
+                if in_description and entry.description:
+                    haystacks.append(entry.description)
+                if in_body:
+                    haystacks.append(entry.body)
+                text = "\n".join(haystacks)
+                tokens = re.findall(r"[\w-]+", text)
+                if not tokens:
+                    continue
+                tokens_norm = tokens if case_sensitive else [t.lower() for t in tokens]
+                close = difflib.get_close_matches(kw, tokens_norm, n=1, cutoff=0.7)
+                if not close:
+                    continue
+                matched_norm = close[0]
+                try:
+                    idx = tokens_norm.index(matched_norm)
+                    matched_token = tokens[idx]
+                except ValueError:
+                    matched_token = matched_norm
+                snippet = matched_token
+                for line in text.splitlines():
+                    if matched_token in line:
+                        snippet = line.strip()
+                        break
+                results.append((entry, [f"~ {snippet}"]))
+            results.sort(key=lambda r: (0 if r[0].type == "feedback" else 1, -r[0].mtime))
+            return results
+        if all_words:
+            words = keyword.split()
+            if not words:
+                return []
+            try:
+                word_res = [re.compile(re.escape(w), flags) for w in words]
+            except re.error:
+                return []
+            results: list[tuple[MemoryEntry, list[str]]] = []
+            for entry in self.list_entries(project_id=project_id, type_filter=type_filter):
+                haystacks: list[str] = []
+                if in_title:
+                    haystacks.append(entry.name)
+                if in_description and entry.description:
+                    haystacks.append(entry.description)
+                if in_body:
+                    haystacks.append(entry.body)
+                combined = "\n".join(haystacks)
+                if not all(wr.search(combined) for wr in word_res):
+                    continue
+                matched: list[str] = []
+                seen: set[int] = set()
+                for line in combined.splitlines():
+                    if len(matched) >= 3:
+                        break
+                    for i, wr in enumerate(word_res):
+                        if i in seen:
+                            continue
+                        if wr.search(line):
+                            matched.append(line.strip())
+                            seen.add(i)
+                            break
+                results.append((entry, matched[:3]))
+            results.sort(key=lambda r: (0 if r[0].type == "feedback" else 1, -r[0].mtime))
+            return results
         try:
             kw_re = re.compile(re.escape(keyword), flags)
         except re.error:
             return []
-        results: list[tuple[MemoryEntry, list[str]]] = []
+        results = []
         for entry in self.list_entries(project_id=project_id, type_filter=type_filter):
-            matched: list[str] = []
+            matched = []
             hit = False
             if in_title and kw_re.search(entry.name):
                 matched.append(f"name: {entry.name}")
@@ -274,6 +424,104 @@ class MemoryStore:
                 results.append((entry, matched[:3]))
         results.sort(key=lambda r: (0 if r[0].type == "feedback" else 1, -r[0].mtime))
         return results
+
+    def _resolve_project_dir(self, project_id: str) -> Optional[Path]:
+        if not self.projects_dir.exists():
+            return None
+        direct = self.projects_dir / project_id
+        if direct.is_dir():
+            return direct
+        try:
+            entries = list(self.projects_dir.iterdir())
+        except (OSError, PermissionError):
+            return None
+        for d in entries:
+            if not d.is_dir():
+                continue
+            if self.short_id(d.name) == project_id:
+                return d
+        q = project_id.lower()
+        candidates: list[Path] = []
+        for d in entries:
+            if not d.is_dir():
+                continue
+            decoded = decode_project_dir(d.name) or d.name
+            if q in d.name.lower() or q in decoded.lower():
+                candidates.append(d)
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def add_entry(self,
+                  project_id: str,
+                  name: str,
+                  type: str,
+                  description: str,
+                  body: str,
+                  *,
+                  origin_session_id: Optional[str] = None) -> Path:
+        if type not in VALID_TYPES:
+            raise ValueError(f"Invalid type: {type!r} (must be one of {sorted(VALID_TYPES)})")
+        slug = _slugify(name)
+        if not slug:
+            raise ValueError(f"Name {name!r} produces empty slug")
+        project_dir = self._resolve_project_dir(project_id)
+        if project_dir is None:
+            raise NotFoundError(f"Project not found: {project_id!r}")
+        mem_dir = project_dir / "memory"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{type}_{slug}.md"
+        file_path = mem_dir / filename
+        if file_path.exists():
+            raise EntryExistsError(f"Entry already exists: {file_path}")
+        fm_lines = [
+            "---",
+            f"name: {name}",
+            f"description: {description}",
+            f"type: {type}",
+        ]
+        if origin_session_id:
+            fm_lines.append(f"originSessionId: {origin_session_id}")
+        fm_lines.append("---")
+        body_text = body if body.endswith("\n") else body + "\n"
+        content = "\n".join(fm_lines) + "\n" + body_text
+        file_path.write_text(content, encoding="utf-8")
+        self._short_ids_cache = None
+        self._common_prefix_cache = None
+        return file_path
+
+    def update_entry(self,
+                     file_path: Path,
+                     *,
+                     name: Optional[str] = None,
+                     description: Optional[str] = None,
+                     type: Optional[str] = None) -> MemoryEntry:
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise ValueError(f"Cannot read {file_path}: {e}") from e
+        parsed = _parse_frontmatter(text)
+        if parsed is None:
+            raise ValueError(f"Cannot parse frontmatter: {file_path}")
+        fm, body = parsed
+        if type is not None and type not in VALID_TYPES:
+            raise ValueError(f"Invalid type: {type!r} (must be one of {sorted(VALID_TYPES)})")
+        if name is not None:
+            fm["name"] = name
+        if description is not None:
+            fm["description"] = description
+        if type is not None:
+            fm["type"] = type
+        lines = ["---"]
+        for k, v in fm.items():
+            lines.append(f"{k}: {v}")
+        lines.append("---")
+        new_text = "\n".join(lines) + "\n" + body
+        file_path.write_text(new_text, encoding="utf-8")
+        entry = self.parse_entry(file_path)
+        if entry is None:
+            raise ValueError(f"Failed to re-parse after update: {file_path}")
+        return entry
 
     def find(self, ref: str) -> MemoryEntry:
         if ":" in ref:
