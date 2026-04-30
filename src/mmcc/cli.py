@@ -30,7 +30,7 @@ def _ensure_utf8() -> None:
 def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="JSON output")
-    common.add_argument("--projects-dir", type=Path, default=None, help=argparse.SUPPRESS)
+    common.add_argument("--projects-dir", type=Path, default=argparse.SUPPRESS, help=argparse.SUPPRESS)
 
     p = argparse.ArgumentParser(
         prog="mmcc",
@@ -45,17 +45,25 @@ def _build_parser() -> argparse.ArgumentParser:
     tree.add_argument("--all", action="store_true", help="Include worktree alias + empty projects")
 
     lst = sub.add_parser("list", help="List memory entries", parents=[common])
-    lst.add_argument("--project", help="Filter by project (id/short id/substring)")
+    lst_g = lst.add_mutually_exclusive_group()
+    lst_g.add_argument("project_pos", nargs="?", default=None, metavar="PROJECT",
+                       help="Filter by project (id/short id/substring)")
+    lst_g.add_argument("--project", dest="project", default=None,
+                       help="Filter by project (id/short id/substring)")
     lst.add_argument("--type", choices=["feedback", "user", "project", "reference", "unknown"])
     lst.add_argument("--limit", type=int, default=50, help="0 = no limit")
 
     s = sub.add_parser("search", help="Search across memory", parents=[common])
     s.add_argument("keyword")
+    s_g = s.add_mutually_exclusive_group()
+    s_g.add_argument("project_pos", nargs="?", default=None, metavar="PROJECT",
+                     help="Filter by project (id/short id/substring)")
+    s_g.add_argument("--project", dest="project", default=None,
+                     help="Filter by project (id/short id/substring)")
     s.add_argument("--body", action="store_true", help="Search body only (default: all)")
     s.add_argument("--title", action="store_true", help="Search title only (default: all)")
     s.add_argument("--description", action="store_true", help="Search description only (default: all)")
     s.add_argument("--type", choices=["feedback", "user", "project", "reference", "unknown"])
-    s.add_argument("--project")
     s.add_argument("--case-sensitive", action="store_true")
     s.add_argument("--limit", type=int, default=50)
 
@@ -75,7 +83,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def _make_store(args: argparse.Namespace) -> MemoryStore:
-    return MemoryStore(args.projects_dir if args.projects_dir else PROJECTS_DIR)
+    pd = getattr(args, "projects_dir", None)
+    return MemoryStore(pd if pd else PROJECTS_DIR)
 
 
 def _cmd_tree(args: argparse.Namespace, store: MemoryStore) -> int:
@@ -85,7 +94,8 @@ def _cmd_tree(args: argparse.Namespace, store: MemoryStore) -> int:
 
 
 def _cmd_list(args: argparse.Namespace, store: MemoryStore) -> int:
-    entries = store.list_entries(project_id=args.project, type_filter=args.type)
+    project = args.project_pos or args.project
+    entries = store.list_entries(project_id=project, type_filter=args.type)
     if args.limit > 0:
         entries = entries[: args.limit]
     print(render.fmt_list(entries, store.short_id, json_mode=args.json))
@@ -100,13 +110,14 @@ def _cmd_search(args: argparse.Namespace, store: MemoryStore) -> int:
         in_description = args.description
     else:
         in_body = in_title = in_description = True
+    project = args.project_pos or args.project
     results = store.search(
         args.keyword,
         in_body=in_body,
         in_title=in_title,
         in_description=in_description,
         type_filter=args.type,
-        project_id=args.project,
+        project_id=project,
         case_sensitive=args.case_sensitive,
     )
     if args.limit > 0:
