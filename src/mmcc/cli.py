@@ -184,7 +184,7 @@ def _cmd_edit(args: argparse.Namespace, store: MemoryStore) -> int:
                 description=args.description,
                 type=args.type,
             )
-        except ValueError as e:
+        except (ValueError, OSError) as e:
             print(f"Error: {e}", file=sys.stderr)
             return 1
         print(f"Updated: {updated.file_path}")
@@ -293,7 +293,7 @@ def _cmd_add(args: argparse.Namespace, store: MemoryStore) -> int:
             body=body,
             origin_session_id=args.origin_session_id,
         )
-    except (EntryExistsError, NotFoundError, ValueError) as e:
+    except (EntryExistsError, NotFoundError, ValueError, OSError) as e:
         print(f"Error: {e}", file=sys.stderr)
         return 1
     print(f"Created: {path}")

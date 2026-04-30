@@ -354,3 +354,71 @@ class TestEditorLaunchErrors:
         _, err = capsys.readouterr()
         assert rc == 1
         assert "Traceback" not in err
+
+
+class TestFilesystemErrors:
+    def test_edit_flag_path_handles_oserror(self, mock_projects: Path,
+                                             monkeypatch, capsys):
+        def fake_update_entry(*a, **kw):
+            raise PermissionError("simulated read-only file")
+
+        monkeypatch.setattr("mmcc.store.MemoryStore.update_entry", fake_update_entry)
+        rc = main([
+            "--projects-dir", str(mock_projects),
+            "edit", "feedback_first.md",
+            "--description", "patched",
+        ])
+        _, err = capsys.readouterr()
+        assert rc == 1
+        assert "Traceback" not in err
+        assert "Error" in err
+
+    def test_edit_flag_disk_full_oserror(self, mock_projects: Path,
+                                          monkeypatch, capsys):
+        def fake_update_entry(*a, **kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("mmcc.store.MemoryStore.update_entry", fake_update_entry)
+        rc = main([
+            "--projects-dir", str(mock_projects),
+            "edit", "feedback_first.md",
+            "--name", "renamed",
+        ])
+        _, err = capsys.readouterr()
+        assert rc == 1
+        assert "Traceback" not in err
+
+    def test_add_handles_oserror(self, mock_projects: Path, monkeypatch, capsys):
+        def fake_add_entry(*a, **kw):
+            raise PermissionError("simulated read-only project dir")
+
+        monkeypatch.setattr("mmcc.store.MemoryStore.add_entry", fake_add_entry)
+        rc = main([
+            "--projects-dir", str(mock_projects),
+            "add",
+            "--type", "feedback",
+            "--name", "x",
+            "--body", "y",
+            "--project", "D--test-normal",
+        ])
+        _, err = capsys.readouterr()
+        assert rc == 1
+        assert "Traceback" not in err
+        assert "Error" in err
+
+    def test_add_disk_full_oserror(self, mock_projects: Path, monkeypatch, capsys):
+        def fake_add_entry(*a, **kw):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr("mmcc.store.MemoryStore.add_entry", fake_add_entry)
+        rc = main([
+            "--projects-dir", str(mock_projects),
+            "add",
+            "--type", "user",
+            "--name", "x",
+            "--body", "y",
+            "--project", "D--test-normal",
+        ])
+        _, err = capsys.readouterr()
+        assert rc == 1
+        assert "Traceback" not in err
