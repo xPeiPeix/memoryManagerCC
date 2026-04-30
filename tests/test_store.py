@@ -6,10 +6,12 @@ import pytest
 
 from mmcc.store import (
     AmbiguousRefError,
+    EntryExistsError,
     MemoryStore,
     NotFoundError,
     _name_from_filename,
     _parse_frontmatter,
+    _slugify,
 )
 
 
@@ -400,3 +402,127 @@ class TestShortIdMultiLayer:
         ]
         shorts = [store.short_id(p) for p in ids]
         assert len(set(shorts)) == len(shorts), f"Duplicates in {shorts}"
+
+
+class TestSlugify:
+    def test_basic(self):
+        assert _slugify("test fb") == "test_fb"
+
+    def test_lowercase(self):
+        assert _slugify("Some Topic") == "some_topic"
+
+    def test_special_chars(self):
+        assert _slugify("Some Topic!") == "some_topic"
+
+    def test_collapse_underscores(self):
+        assert _slugify("a   b") == "a_b"
+
+    def test_chinese_preserved(self):
+        assert "中文" in _slugify("中文 fb")
+
+    def test_strip_edges(self):
+        assert _slugify("  hi  ") == "hi"
+
+
+class TestAddEntry:
+    def test_add_success(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        path = store.add_entry(
+            project_id="D--test-normal",
+            name="My new feedback",
+            type="feedback",
+            description="some desc",
+            body="**Why:** because.\n**How to apply:** when X.",
+        )
+        assert path.exists()
+        assert path.name == "feedback_my_new_feedback.md"
+        text = path.read_text(encoding="utf-8")
+        assert "name: My new feedback" in text
+        assert "description: some desc" in text
+        assert "type: feedback" in text
+        assert "**Why:**" in text
+
+    def test_add_duplicate_raises(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        with pytest.raises(EntryExistsError):
+            store.add_entry(
+                project_id="D--test-normal",
+                name="first",
+                type="feedback",
+                description="dup",
+                body="body",
+            )
+
+    def test_add_unknown_project_raises(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        with pytest.raises(NotFoundError):
+            store.add_entry(
+                project_id="does-not-exist-foo-bar",
+                name="x",
+                type="feedback",
+                description="",
+                body="body",
+            )
+
+    def test_add_with_origin_session(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        path = store.add_entry(
+            project_id="D--test-normal",
+            name="with session",
+            type="user",
+            description="d",
+            body="b",
+            origin_session_id="sess-xyz-123",
+        )
+        text = path.read_text(encoding="utf-8")
+        assert "originSessionId: sess-xyz-123" in text
+
+    def test_add_round_trip_via_parse(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        path = store.add_entry(
+            project_id="D--test-normal",
+            name="Round trip",
+            type="reference",
+            description="round-trip desc",
+            body="some body content",
+        )
+        entry = store.parse_entry(path)
+        assert entry is not None
+        assert entry.name == "Round trip"
+        assert entry.description == "round-trip desc"
+        assert entry.type == "reference"
+        assert "some body content" in entry.body
+
+    def test_add_resolves_short_id(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        short = store.short_id("D--test-normal")
+        path = store.add_entry(
+            project_id=short,
+            name="via short",
+            type="feedback",
+            description="d",
+            body="b",
+        )
+        assert path.parent.parent.name == "D--test-normal"
+
+    def test_add_invalid_type_raises(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        with pytest.raises(ValueError):
+            store.add_entry(
+                project_id="D--test-normal",
+                name="x",
+                type="invalid_type",
+                description="",
+                body="b",
+            )
+
+    def test_add_empty_name_raises(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        with pytest.raises(ValueError):
+            store.add_entry(
+                project_id="D--test-normal",
+                name="!!!",
+                type="feedback",
+                description="",
+                body="b",
+            )

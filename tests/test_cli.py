@@ -155,3 +155,86 @@ class TestSearchFuzzy:
                 "search", "anything", "--fuzzy", "--all-words",
             ])
         assert exc_info.value.code == 2
+
+
+class TestAddCommand:
+    def test_add_with_inline_body(self, mock_projects: Path, capsys):
+        rc, out, _ = _run([
+            "--projects-dir", str(mock_projects),
+            "add",
+            "--type", "feedback",
+            "--name", "cli new fb",
+            "--description", "from cli",
+            "--body", "**Why:** test\n**How to apply:** when CLI test runs.",
+            "--project", "D--test-normal",
+        ], capsys)
+        assert rc == 0
+        assert "Created:" in out
+        assert (mock_projects / "D--test-normal" / "memory" / "feedback_cli_new_fb.md").exists()
+
+    def test_add_duplicate_exits_1(self, mock_projects: Path, capsys):
+        rc, _, err = _run([
+            "--projects-dir", str(mock_projects),
+            "add",
+            "--type", "feedback",
+            "--name", "first",
+            "--body", "x",
+            "--project", "D--test-normal",
+        ], capsys)
+        assert rc == 1
+        assert "exists" in err.lower()
+
+    def test_add_unknown_project_exits_1(self, mock_projects: Path, capsys):
+        rc, _, err = _run([
+            "--projects-dir", str(mock_projects),
+            "add",
+            "--type", "feedback",
+            "--name", "x",
+            "--body", "y",
+            "--project", "definitely-not-a-real-project-xyz",
+        ], capsys)
+        assert rc == 1
+        assert "not found" in err.lower()
+
+    def test_add_invalid_type_argparse_error(self, mock_projects: Path):
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--projects-dir", str(mock_projects),
+                "add",
+                "--type", "bogus",
+                "--name", "x",
+                "--body", "y",
+                "--project", "D--test-normal",
+            ])
+        assert exc_info.value.code == 2
+
+    def test_add_no_project_no_cwd_match_exits_1(self, mock_projects: Path,
+                                                  monkeypatch, tmp_path, capsys):
+        unrelated = tmp_path / "unrelated"
+        unrelated.mkdir()
+        monkeypatch.chdir(unrelated)
+        rc, _, err = _run([
+            "--projects-dir", str(mock_projects),
+            "add",
+            "--type", "feedback",
+            "--name", "x",
+            "--body", "y",
+        ], capsys)
+        assert rc == 1
+        assert "not found" in err.lower() or "could not detect" in err.lower()
+
+    def test_add_with_origin_session_id(self, mock_projects: Path, capsys):
+        rc, _, _ = _run([
+            "--projects-dir", str(mock_projects),
+            "add",
+            "--type", "user",
+            "--name", "user with sess",
+            "--body", "body",
+            "--origin-session-id", "ses-789",
+            "--project", "D--test-normal",
+        ], capsys)
+        assert rc == 0
+        path = mock_projects / "D--test-normal" / "memory" / "user_user_with_sess.md"
+        assert path.exists()
+        text = path.read_text(encoding="utf-8")
+        assert "originSessionId: ses-789" in text

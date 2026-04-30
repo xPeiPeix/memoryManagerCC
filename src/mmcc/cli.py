@@ -12,6 +12,7 @@ from . import __version__, render
 from .paths import PROJECTS_DIR
 from .store import (
     AmbiguousRefError,
+    EntryExistsError,
     MemoryStore,
     NotFoundError,
 )
@@ -83,6 +84,17 @@ def _build_parser() -> argparse.ArgumentParser:
     which.add_argument("ref")
     which.add_argument("--windows-style", action="store_true",
                        help="Use backslash paths (default: forward slash)")
+
+    add = sub.add_parser("add", help="Create a new memory entry", parents=[common])
+    add.add_argument("--type", required=True,
+                     choices=["feedback", "user", "project", "reference"])
+    add.add_argument("--name", required=True)
+    add.add_argument("--description", default="")
+    add.add_argument("--project", default=None,
+                     help="Target project (id/short id/substring); defaults to cwd")
+    add.add_argument("--body", default=None,
+                     help="Body text inline; if omitted, opens $EDITOR")
+    add.add_argument("--origin-session-id", dest="origin_session_id", default=None)
 
     return p
 
@@ -181,6 +193,82 @@ def _cmd_which(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def _detect_project_id_from_cwd() -> Optional[str]:
+    s = str(Path.cwd()).replace("\\", "/")
+    if len(s) >= 3 and s[1] == ":":
+        drive = s[0]
+        rest = s[3:]
+        encoded = f"{drive}--{rest.replace('/', '-')}"
+        return encoded.rstrip("-") or None
+    if s.startswith("/mnt/") and len(s) >= 7:
+        return ("-" + s[1:].replace("/", "-")).rstrip("-") or None
+    if s.startswith("/"):
+        return ("-" + s[1:].replace("/", "-")).rstrip("-") or None
+    return None
+
+
+def _find_editor() -> Optional[str]:
+    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
+    if editor:
+        return editor
+    for cmd in ("code", "notepad"):
+        if shutil.which(cmd):
+            return cmd
+    return None
+
+
+def _prompt_body_via_editor() -> Optional[str]:
+    editor = _find_editor()
+    if not editor:
+        print("No editor found. Set $EDITOR/$VISUAL or pass --body inline.", file=sys.stderr)
+        return None
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".md", mode="w", delete=False, encoding="utf-8") as f:
+        f.write("# Type body below; lines starting with # will be stripped.\n")
+        tmp = f.name
+    try:
+        subprocess.run([editor, tmp], check=False)
+        with open(tmp, "r", encoding="utf-8") as fh:
+            raw = fh.read()
+        lines = [ln for ln in raw.splitlines() if not ln.startswith("#")]
+        body = "\n".join(lines).strip()
+        return body if body else None
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+
+def _cmd_add(args: argparse.Namespace, store: MemoryStore) -> int:
+    project_id = args.project
+    if not project_id:
+        project_id = _detect_project_id_from_cwd()
+        if not project_id:
+            print("Error: --project required (could not detect from cwd).", file=sys.stderr)
+            return 1
+    body = args.body
+    if body is None:
+        body = _prompt_body_via_editor()
+        if body is None:
+            print("Error: empty body, aborting.", file=sys.stderr)
+            return 1
+    try:
+        path = store.add_entry(
+            project_id=project_id,
+            name=args.name,
+            type=args.type,
+            description=args.description,
+            body=body,
+            origin_session_id=args.origin_session_id,
+        )
+    except (EntryExistsError, NotFoundError, ValueError) as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    print(f"Created: {path}")
+    return 0
+
+
 _HANDLERS = {
     "tree": _cmd_tree,
     "list": _cmd_list,
@@ -188,6 +276,7 @@ _HANDLERS = {
     "cat": _cmd_cat,
     "edit": _cmd_edit,
     "which": _cmd_which,
+    "add": _cmd_add,
 }
 
 

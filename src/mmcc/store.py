@@ -31,6 +31,10 @@ class AmbiguousRefError(MemoryStoreError):
         self.candidates = candidates
 
 
+class EntryExistsError(MemoryStoreError):
+    pass
+
+
 @dataclass(frozen=True)
 class MemoryEntry:
     project_id: str
@@ -85,6 +89,14 @@ def _name_from_filename(filename: str) -> str:
             stem = stem[len(prefix):]
             break
     return stem.replace("_", " ")
+
+
+def _slugify(name: str) -> str:
+    s = name.strip().lower()
+    s = re.sub(r"[\s\-]+", "_", s)
+    s = re.sub(r"[^\w]", "", s, flags=re.UNICODE)
+    s = re.sub(r"_+", "_", s)
+    return s.strip("_")
 
 
 class MemoryStore:
@@ -412,6 +424,71 @@ class MemoryStore:
                 results.append((entry, matched[:3]))
         results.sort(key=lambda r: (0 if r[0].type == "feedback" else 1, -r[0].mtime))
         return results
+
+    def _resolve_project_dir(self, project_id: str) -> Optional[Path]:
+        if not self.projects_dir.exists():
+            return None
+        direct = self.projects_dir / project_id
+        if direct.is_dir():
+            return direct
+        try:
+            entries = list(self.projects_dir.iterdir())
+        except (OSError, PermissionError):
+            return None
+        for d in entries:
+            if not d.is_dir():
+                continue
+            if self.short_id(d.name) == project_id:
+                return d
+        q = project_id.lower()
+        candidates: list[Path] = []
+        for d in entries:
+            if not d.is_dir():
+                continue
+            decoded = decode_project_dir(d.name) or d.name
+            if q in d.name.lower() or q in decoded.lower():
+                candidates.append(d)
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def add_entry(self,
+                  project_id: str,
+                  name: str,
+                  type: str,
+                  description: str,
+                  body: str,
+                  *,
+                  origin_session_id: Optional[str] = None) -> Path:
+        if type not in VALID_TYPES:
+            raise ValueError(f"Invalid type: {type!r} (must be one of {sorted(VALID_TYPES)})")
+        slug = _slugify(name)
+        if not slug:
+            raise ValueError(f"Name {name!r} produces empty slug")
+        project_dir = self._resolve_project_dir(project_id)
+        if project_dir is None:
+            raise NotFoundError(f"Project not found: {project_id!r}")
+        mem_dir = project_dir / "memory"
+        mem_dir.mkdir(parents=True, exist_ok=True)
+        filename = f"{type}_{slug}.md"
+        file_path = mem_dir / filename
+        if file_path.exists():
+            raise EntryExistsError(f"Entry already exists: {file_path}")
+        fm_lines = [
+            "---",
+            f"name: {name}",
+            f"description: {description}",
+            f"type: {type}",
+        ]
+        if origin_session_id:
+            fm_lines.append(f"originSessionId: {origin_session_id}")
+        fm_lines.append("---")
+        body_text = body if body.endswith("\n") else body + "\n"
+        content = "\n".join(fm_lines) + "\n" + body_text
+        file_path.write_text(content, encoding="utf-8")
+        self._short_ids_cache = None
+        self._common_prefix_cache = None
+        return file_path
 
     def find(self, ref: str) -> MemoryEntry:
         if ":" in ref:
