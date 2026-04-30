@@ -91,6 +91,7 @@ class MemoryStore:
     def __init__(self, projects_dir: Path | str = PROJECTS_DIR):
         self.projects_dir = Path(projects_dir)
         self._common_prefix_cache: Optional[str] = None
+        self._short_ids_cache: Optional[dict[str, str]] = None
 
     def parse_entry(self, file_path: Path) -> Optional[MemoryEntry]:
         try:
@@ -235,7 +236,69 @@ class MemoryStore:
         return self._common_prefix_cache
 
     def short_id(self, project_id: str) -> str:
-        return project_short_id(project_id, self.common_prefix())
+        sids = self._short_ids()
+        return sids.get(project_id, project_short_id(project_id, self.common_prefix()))
+
+    def _short_ids(self) -> dict[str, str]:
+        if self._short_ids_cache is not None:
+            return self._short_ids_cache
+        lcp = self.common_prefix()
+        ids: list[str] = []
+        if self.projects_dir.exists():
+            try:
+                for d in self.projects_dir.iterdir():
+                    if d.is_dir():
+                        ids.append(d.name)
+            except (OSError, PermissionError):
+                pass
+        layer1: dict[str, str] = {}
+        for pid in ids:
+            if lcp and pid.startswith(lcp):
+                rest = pid[len(lcp):]
+                layer1[pid] = rest if rest else pid
+            else:
+                layer1[pid] = pid
+        cats = self._compute_categories(list(layer1.values())) if lcp else []
+        layer2: dict[str, str] = {}
+        for pid, l1 in layer1.items():
+            stripped: Optional[str] = None
+            for cat in cats:
+                if l1.startswith(cat):
+                    tail = l1[len(cat):]
+                    if tail:
+                        stripped = tail
+                        break
+            layer2[pid] = stripped if stripped is not None else l1
+        if cats and len(set(layer2.values())) != len(layer2):
+            self._short_ids_cache = layer1
+        else:
+            self._short_ids_cache = layer2
+        return self._short_ids_cache
+
+    def _compute_categories(self, layer1_values: list[str]) -> list[str]:
+        from collections import defaultdict
+        groups: dict[str, list[str]] = defaultdict(list)
+        for v in layer1_values:
+            head = v.split("-", 1)[0]
+            groups[head].append(v)
+        cats: list[str] = []
+        for items in groups.values():
+            if len(items) < 2:
+                continue
+            items_filtered = [i for i in items if not any(j != i and j.startswith(i + "-") for j in items)]
+            if len(items_filtered) < 2:
+                continue
+            gprefix = longest_common_prefix(items_filtered)
+            if not gprefix:
+                continue
+            if not gprefix.endswith("-"):
+                idx = gprefix.rfind("-")
+                if idx < 0:
+                    continue
+                gprefix = gprefix[: idx + 1]
+            cats.append(gprefix)
+        cats.sort(key=len, reverse=True)
+        return cats
 
     def search(self, keyword: str, *,
                in_body: bool = True,

@@ -250,3 +250,95 @@ class TestShortId:
             short = store.short_id("D--test-normal")
             assert "D--test-normal".startswith(prefix)
             assert short != "D--test-normal" or prefix == ""
+
+
+def _make_projects(tmp_path: Path, names: list[str]) -> Path:
+    pdir = tmp_path / "projects"
+    pdir.mkdir()
+    for n in names:
+        mem = pdir / n / "memory"
+        mem.mkdir(parents=True)
+        (mem / "feedback_x.md").write_text(
+            "---\nname: x\ntype: feedback\n---\nbody\n", encoding="utf-8"
+        )
+    return pdir
+
+
+class TestShortIdMultiLayer:
+    def test_strips_two_layer_category(self, tmp_path: Path):
+        pdir = _make_projects(tmp_path, [
+            "D--dev-code-AI-related-CCometixLine",
+            "D--dev-code-AI-related-ai-gateways",
+            "D--dev-code-AI-related-claude-repath",
+            "D--dev-code-AI-related-memoryManagerCC",
+            "D--dev-code-foo",
+            "D--dev-code-bar",
+        ])
+        store = MemoryStore(pdir)
+        assert store.short_id("D--dev-code-AI-related-CCometixLine") == "CCometixLine"
+        assert store.short_id("D--dev-code-AI-related-ai-gateways") == "ai-gateways"
+        assert store.short_id("D--dev-code-foo") == "foo"
+        assert store.short_id("D--dev-code-bar") == "bar"
+
+    def test_multiple_categories(self, tmp_path: Path):
+        pdir = _make_projects(tmp_path, [
+            "D--dev-code-AI-related-X",
+            "D--dev-code-AI-related-Y",
+            "D--dev-code-Tools-Japanese-learning",
+            "D--dev-code-Tools-foo",
+            "D--dev-code-ICBC-bar",
+            "D--dev-code-ICBC-baz",
+        ])
+        store = MemoryStore(pdir)
+        assert store.short_id("D--dev-code-AI-related-X") == "X"
+        assert store.short_id("D--dev-code-Tools-Japanese-learning") == "Japanese-learning"
+        assert store.short_id("D--dev-code-Tools-foo") == "foo"
+        assert store.short_id("D--dev-code-ICBC-bar") == "bar"
+
+    def test_falls_back_when_short_names_collide(self, tmp_path: Path):
+        pdir = _make_projects(tmp_path, [
+            "D--dev-code-AI-related-X",
+            "D--dev-code-AI-related-Y",
+            "D--dev-code-Tools-X",
+            "D--dev-code-Tools-Y",
+        ])
+        store = MemoryStore(pdir)
+        assert store.short_id("D--dev-code-AI-related-X") == "AI-related-X"
+        assert store.short_id("D--dev-code-AI-related-Y") == "AI-related-Y"
+        assert store.short_id("D--dev-code-Tools-X") == "Tools-X"
+        assert store.short_id("D--dev-code-Tools-Y") == "Tools-Y"
+
+    def test_no_category_when_low_frequency(self, tmp_path: Path):
+        pdir = _make_projects(tmp_path, [
+            "D--dev-code-AI-related-X",
+            "D--dev-code-foo",
+            "D--dev-code-bar",
+        ])
+        store = MemoryStore(pdir)
+        assert store.short_id("D--dev-code-AI-related-X") == "AI-related-X"
+
+    def test_project_id_not_under_lcp(self, tmp_path: Path):
+        pdir = _make_projects(tmp_path, [
+            "D--dev-code-AI-related-X",
+            "D--dev-code-AI-related-Y",
+            "C--Users-other-thing",
+        ])
+        store = MemoryStore(pdir)
+        assert store.short_id("C--Users-other-thing") == "C--Users-other-thing"
+
+    def test_aliased_subcategory_keeps_unique_short(self, tmp_path: Path):
+        pdir = _make_projects(tmp_path, [
+            "D--dev-code-AI-related-X",
+            "D--dev-code-AI-related-X-claude-worktrees-foo",
+            "D--dev-code-AI-related-Y",
+            "D--dev-code-AI-related-Z",
+        ])
+        store = MemoryStore(pdir)
+        ids = [
+            "D--dev-code-AI-related-X",
+            "D--dev-code-AI-related-X-claude-worktrees-foo",
+            "D--dev-code-AI-related-Y",
+            "D--dev-code-AI-related-Z",
+        ]
+        shorts = [store.short_id(p) for p in ids]
+        assert len(set(shorts)) == len(shorts), f"Duplicates in {shorts}"
