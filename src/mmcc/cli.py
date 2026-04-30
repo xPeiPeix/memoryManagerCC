@@ -77,8 +77,15 @@ def _build_parser() -> argparse.ArgumentParser:
     cat.add_argument("ref")
     cat.add_argument("--no-frontmatter", action="store_true")
 
-    edit = sub.add_parser("edit", help="Open memory in $EDITOR", parents=[common])
+    edit = sub.add_parser("edit", help="Open memory in $EDITOR or patch frontmatter", parents=[common])
     edit.add_argument("ref")
+    edit.add_argument("--name", default=None,
+                      help="Patch frontmatter name (skips editor)")
+    edit.add_argument("--description", default=None,
+                      help="Patch frontmatter description (skips editor)")
+    edit.add_argument("--type", default=None,
+                      choices=["feedback", "user", "project", "reference"],
+                      help="Patch frontmatter type (skips editor)")
 
     which = sub.add_parser("which", help="Print memory file path", parents=[common])
     which.add_argument("ref")
@@ -168,12 +175,21 @@ def _cmd_edit(args: argparse.Namespace, store: MemoryStore) -> int:
     entry, code = _resolve_or_exit(store, args.ref)
     if entry is None:
         return code
-    editor = os.environ.get("EDITOR") or os.environ.get("VISUAL")
-    if not editor:
-        for cmd in ("code", "notepad"):
-            if shutil.which(cmd):
-                editor = cmd
-                break
+    has_flag = args.name is not None or args.description is not None or args.type is not None
+    if has_flag:
+        try:
+            updated = store.update_entry(
+                entry.file_path,
+                name=args.name,
+                description=args.description,
+                type=args.type,
+            )
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            return 1
+        print(f"Updated: {updated.file_path}")
+        return 0
+    editor = _find_editor()
     if not editor:
         print("No editor found. Set $EDITOR or $VISUAL.", file=sys.stderr)
         return 1

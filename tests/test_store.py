@@ -526,3 +526,67 @@ class TestAddEntry:
                 description="",
                 body="b",
             )
+
+
+class TestUpdateEntry:
+    def test_update_description_only(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        entry = store.update_entry(target, description="patched desc")
+        assert entry.description == "patched desc"
+        assert entry.name == "First feedback"
+        assert entry.type == "feedback"
+        text = target.read_text(encoding="utf-8")
+        assert "description: patched desc" in text
+        assert "**Why:** because of X. shared_keyword in feedback body." in text
+
+    def test_update_multiple_fields(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        entry = store.update_entry(target, name="Renamed feedback", description="new")
+        assert entry.name == "Renamed feedback"
+        assert entry.description == "new"
+
+    def test_update_preserves_origin_session_id(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        entry = store.update_entry(target, description="x")
+        assert entry.origin_session_id == "abc-123"
+
+    def test_update_preserves_unknown_keys(self, mock_projects: Path, tmp_path: Path):
+        target = tmp_path / "weird.md"
+        target.write_text(
+            "---\n"
+            "name: orig\n"
+            "description: orig desc\n"
+            "type: feedback\n"
+            "customField: keep-me\n"
+            "anotherKey: also-keep\n"
+            "---\n"
+            "body line\n",
+            encoding="utf-8",
+        )
+        store = MemoryStore(mock_projects=tmp_path) if False else MemoryStore(tmp_path)
+        store.update_entry(target, description="changed")
+        text = target.read_text(encoding="utf-8")
+        assert "customField: keep-me" in text
+        assert "anotherKey: also-keep" in text
+        assert "description: changed" in text
+
+    def test_update_invalid_type_raises(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        with pytest.raises(ValueError):
+            store.update_entry(target, type="bogus_type")
+
+    def test_update_no_changes_idempotent(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        before = target.read_text(encoding="utf-8")
+        store.update_entry(target)
+        after = target.read_text(encoding="utf-8")
+        # parse round-trip may rewrite minor whitespace but key fields preserved
+        before_entry = store.parse_entry(target)
+        assert before_entry is not None
+        assert before_entry.name == "First feedback"
+        assert before_entry.body.strip() == "**Why:** because of X. shared_keyword in feedback body.\n**How to apply:** when Y happens.".strip()

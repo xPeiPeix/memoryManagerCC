@@ -490,6 +490,39 @@ class MemoryStore:
         self._common_prefix_cache = None
         return file_path
 
+    def update_entry(self,
+                     file_path: Path,
+                     *,
+                     name: Optional[str] = None,
+                     description: Optional[str] = None,
+                     type: Optional[str] = None) -> MemoryEntry:
+        try:
+            text = file_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as e:
+            raise ValueError(f"Cannot read {file_path}: {e}") from e
+        parsed = _parse_frontmatter(text)
+        if parsed is None:
+            raise ValueError(f"Cannot parse frontmatter: {file_path}")
+        fm, body = parsed
+        if type is not None and type not in VALID_TYPES:
+            raise ValueError(f"Invalid type: {type!r} (must be one of {sorted(VALID_TYPES)})")
+        if name is not None:
+            fm["name"] = name
+        if description is not None:
+            fm["description"] = description
+        if type is not None:
+            fm["type"] = type
+        lines = ["---"]
+        for k, v in fm.items():
+            lines.append(f"{k}: {v}")
+        lines.append("---")
+        new_text = "\n".join(lines) + "\n" + body
+        file_path.write_text(new_text, encoding="utf-8")
+        entry = self.parse_entry(file_path)
+        if entry is None:
+            raise ValueError(f"Failed to re-parse after update: {file_path}")
+        return entry
+
     def find(self, ref: str) -> MemoryEntry:
         if ":" in ref:
             project_part, filename = ref.split(":", 1)

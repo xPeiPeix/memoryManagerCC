@@ -238,3 +238,70 @@ class TestAddCommand:
         assert path.exists()
         text = path.read_text(encoding="utf-8")
         assert "originSessionId: ses-789" in text
+
+
+class TestEditFrontmatterFlag:
+    def test_edit_description_flag_no_editor(self, mock_projects: Path, capsys):
+        rc, out, _ = _run([
+            "--projects-dir", str(mock_projects),
+            "edit", "feedback_first.md",
+            "--description", "patched via cli",
+        ], capsys)
+        assert rc == 0
+        assert "Updated:" in out
+        path = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        text = path.read_text(encoding="utf-8")
+        assert "description: patched via cli" in text
+
+    def test_edit_multiple_flags(self, mock_projects: Path, capsys):
+        rc, _, _ = _run([
+            "--projects-dir", str(mock_projects),
+            "edit", "feedback_first.md",
+            "--name", "Renamed",
+            "--description", "new desc",
+        ], capsys)
+        assert rc == 0
+        path = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        text = path.read_text(encoding="utf-8")
+        assert "name: Renamed" in text
+        assert "description: new desc" in text
+
+    def test_edit_type_flag(self, mock_projects: Path, capsys):
+        rc, _, _ = _run([
+            "--projects-dir", str(mock_projects),
+            "edit", "feedback_first.md",
+            "--type", "user",
+        ], capsys)
+        assert rc == 0
+        path = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        text = path.read_text(encoding="utf-8")
+        assert "type: user" in text
+
+    def test_edit_invalid_type_argparse_error(self, mock_projects: Path):
+        with pytest.raises(SystemExit) as exc_info:
+            main([
+                "--projects-dir", str(mock_projects),
+                "edit", "feedback_first.md",
+                "--type", "bogus",
+            ])
+        assert exc_info.value.code == 2
+
+    def test_edit_no_flags_uses_editor(self, mock_projects: Path, monkeypatch, capsys):
+        called = {"argv": None}
+
+        def fake_popen(argv, *a, **kw):
+            called["argv"] = argv
+
+            class _Fake:
+                pid = 1
+            return _Fake()
+
+        monkeypatch.setenv("EDITOR", "echo")
+        monkeypatch.setattr("mmcc.cli.subprocess.Popen", fake_popen)
+        rc = main([
+            "--projects-dir", str(mock_projects),
+            "edit", "feedback_first.md",
+        ])
+        assert rc == 0
+        assert called["argv"] is not None
+        assert called["argv"][0] == "echo"
