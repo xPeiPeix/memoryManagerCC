@@ -1,9 +1,27 @@
 from __future__ import annotations
 
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
+
+
+def _atomic_write(file_path: Path, content: str) -> None:
+    # 同卷 tempfile + os.replace 防半写文件: 进程崩溃时原文件保持完整
+    parent = file_path.parent
+    fd, tmp_path = tempfile.mkstemp(dir=parent, prefix=".mmcc_tmp_", suffix=".md")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp_path, file_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
 from .paths import (
     PROJECTS_DIR,
@@ -485,7 +503,7 @@ class MemoryStore:
         fm_lines.append("---")
         body_text = body if body.endswith("\n") else body + "\n"
         content = "\n".join(fm_lines) + "\n" + body_text
-        file_path.write_text(content, encoding="utf-8")
+        _atomic_write(file_path, content)
         self._short_ids_cache = None
         self._common_prefix_cache = None
         return file_path
@@ -495,7 +513,10 @@ class MemoryStore:
                      *,
                      name: Optional[str] = None,
                      description: Optional[str] = None,
-                     type: Optional[str] = None) -> MemoryEntry:
+                     type: Optional[str] = None,
+                     body: Optional[str] = None) -> MemoryEntry:
+        if body is not None and not isinstance(body, str):
+            raise ValueError(f"body must be string or None, got {body.__class__.__name__}")
         try:
             text = file_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
@@ -503,7 +524,7 @@ class MemoryStore:
         parsed = _parse_frontmatter(text)
         if parsed is None:
             raise ValueError(f"Cannot parse frontmatter: {file_path}")
-        fm, body = parsed
+        fm, parsed_body = parsed
         if type is not None and type not in VALID_TYPES:
             raise ValueError(f"Invalid type: {type!r} (must be one of {sorted(VALID_TYPES)})")
         if name is not None:
@@ -512,16 +533,25 @@ class MemoryStore:
             fm["description"] = description
         if type is not None:
             fm["type"] = type
+        new_body = parsed_body if body is None else (body if body.endswith("\n") else body + "\n")
         lines = ["---"]
         for k, v in fm.items():
             lines.append(f"{k}: {v}")
         lines.append("---")
-        new_text = "\n".join(lines) + "\n" + body
-        file_path.write_text(new_text, encoding="utf-8")
+        new_text = "\n".join(lines) + "\n" + new_body
+        _atomic_write(file_path, new_text)
         entry = self.parse_entry(file_path)
         if entry is None:
             raise ValueError(f"Failed to re-parse after update: {file_path}")
         return entry
+
+    def delete_entry(self, file_path: Path) -> None:
+        # mmcc memory entry 必须形如 <project>/memory/*.md，避免误删 sessions/*.jsonl 等
+        if file_path.parent.name != "memory" or file_path.suffix != ".md":
+            raise ValueError(f"Not a memory entry: {file_path}")
+        file_path.unlink()
+        self._short_ids_cache = None
+        self._common_prefix_cache = None
 
     def find(self, ref: str) -> MemoryEntry:
         if ":" in ref:

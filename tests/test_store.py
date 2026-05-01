@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -590,3 +591,175 @@ class TestUpdateEntry:
         assert before_entry is not None
         assert before_entry.name == "First feedback"
         assert before_entry.body.strip() == "**Why:** because of X. shared_keyword in feedback body.\n**How to apply:** when Y happens.".strip()
+
+
+class TestUpdateEntryBody:
+    """V2.2: update_entry body 参数 + 原子写"""
+
+    def test_with_body_replaces_body(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        original = target.read_text(encoding="utf-8")
+        assert "**Why:** because of X" in original
+
+        store.update_entry(target, body="completely new body\n")
+
+        text = target.read_text(encoding="utf-8")
+        assert "completely new body" in text
+        assert "**Why:** because of X" not in text
+        # frontmatter intact
+        assert "name: First feedback" in text
+        assert "description: A real feedback" in text
+        assert "originSessionId: abc-123" in text
+
+    def test_body_none_preserves_body(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+
+        store.update_entry(target, name="New name only")
+
+        text = target.read_text(encoding="utf-8")
+        assert "name: New name only" in text
+        assert "**Why:** because of X" in text
+
+    def test_partial_only_name_keeps_body_and_description(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+
+        store.update_entry(target, name="Only the name changed")
+
+        text = target.read_text(encoding="utf-8")
+        assert "name: Only the name changed" in text
+        assert "description: A real feedback" in text
+        assert "**Why:** because of X" in text
+
+    def test_atomic_write_no_partial_file_on_crash(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        original = target.read_text(encoding="utf-8")
+
+        with patch("os.replace", side_effect=OSError("simulated crash")):
+            with pytest.raises(OSError):
+                store.update_entry(target, name="should not be saved")
+
+        assert target.read_text(encoding="utf-8") == original
+
+
+class TestDeleteEntry:
+    """V2.2: delete_entry 新方法"""
+
+    def test_removes_file(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        assert target.exists()
+
+        store.delete_entry(target)
+
+        assert not target.exists()
+
+    def test_file_not_found_raises(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "does_not_exist.md"
+
+        with pytest.raises(FileNotFoundError):
+            store.delete_entry(target)
+
+    def test_invalidates_short_ids_cache(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        _ = store.short_id("D--test-normal")
+        assert store._short_ids_cache is not None
+
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        store.delete_entry(target)
+
+        assert store._short_ids_cache is None
+
+
+class TestAddEntryAtomicWrite:
+    """V2.2: add_entry 改原子写后的崩溃保护"""
+
+    def test_no_partial_file_on_crash(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target_dir = mock_projects / "D--test-empty" / "memory"
+        target_file = target_dir / "feedback_atomic_test.md"
+        assert not target_file.exists()
+
+        with patch("os.replace", side_effect=OSError("simulated crash")):
+            with pytest.raises(OSError):
+                store.add_entry(
+                    project_id="D--test-empty",
+                    name="atomic test",
+                    type="feedback",
+                    description="should not survive",
+                    body="body",
+                )
+
+        assert not target_file.exists()
+
+
+class TestCodexP1DeleteScope:
+    """codex P1: DELETE must be restricted to memory entry files
+
+    Reason: _safe_resolve only checks path is under projects_root, but
+    projects_root contains non-entry files (sessions/*.jsonl, project-level
+    docs, etc). Without entry-shape check, client can delete arbitrary
+    files. mmcc memory entries are <project>/memory/<type>_<slug>.md.
+    """
+
+    def test_delete_entry_rejects_non_memory_dir(self, mock_projects: Path, tmp_path: Path):
+        # File outside any memory/ dir but inside the project tree
+        project = mock_projects / "D--test-normal"
+        non_memory = project / "sessions"
+        non_memory.mkdir(parents=True)
+        target = non_memory / "abc-123.jsonl"
+        target.write_text("session log\n", encoding="utf-8")
+
+        store = MemoryStore(mock_projects)
+        with pytest.raises(ValueError, match="memory entry"):
+            store.delete_entry(target)
+        assert target.exists(), "non-memory file must NOT be deleted"
+
+    def test_delete_entry_rejects_non_md_extension(self, mock_projects: Path):
+        # File inside memory/ but not .md (e.g. accidental backup)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md.bak"
+        target.write_text("backup\n", encoding="utf-8")
+
+        store = MemoryStore(mock_projects)
+        with pytest.raises(ValueError, match="memory entry"):
+            store.delete_entry(target)
+        assert target.exists()
+
+    def test_delete_entry_accepts_memory_md(self, mock_projects: Path):
+        # Sanity: real memory entry still deletes (no regression)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        store = MemoryStore(mock_projects)
+        store.delete_entry(target)
+        assert not target.exists()
+
+
+class TestCodexP2UpdateBodyType:
+    """codex P2: update_entry must validate body type
+
+    Reason: body.endswith("\\n") raises AttributeError if client sends
+    JSON like {"body": 123}. do_PUT only catches (ValueError, OSError),
+    so non-str body → 500 instead of controlled 400.
+    """
+
+    def test_update_entry_rejects_int_body(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        with pytest.raises(ValueError, match="body must be"):
+            store.update_entry(target, body=123)
+
+    def test_update_entry_rejects_list_body(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        with pytest.raises(ValueError, match="body must be"):
+            store.update_entry(target, body=["line1", "line2"])
+
+    def test_update_entry_accepts_str_body(self, mock_projects: Path):
+        # Sanity: str body still works (no regression)
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        store.update_entry(target, body="new body\n")
+        assert "new body" in target.read_text(encoding="utf-8")

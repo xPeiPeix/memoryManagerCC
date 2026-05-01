@@ -5,7 +5,7 @@ import socket
 import threading
 from pathlib import Path
 from urllib.error import HTTPError
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 import pytest
 
@@ -232,3 +232,222 @@ def test_spa_disables_marked_raw_html(server):
         "SPA must call marked.use({renderer: {...}}) to disable raw HTML"
     assert "renderer" in html and "html" in html, \
         "marked.use must override renderer.html to strip raw HTML"
+
+
+# === V2.2 PUT/DELETE handler tests ===
+
+def _put_json(port: int, payload: dict) -> dict:
+    req = Request(
+        f"http://localhost:{port}/api/entry",
+        data=json.dumps(payload).encode("utf-8"),
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(req) as r:
+        return json.loads(r.read())
+
+
+def _delete_json(port: int, payload: dict) -> dict:
+    req = Request(
+        f"http://localhost:{port}/api/entry",
+        data=json.dumps(payload).encode("utf-8"),
+        method="DELETE",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(req) as r:
+        return json.loads(r.read())
+
+
+def _put_raw(port: int, raw_body: bytes) -> int:
+    """Send a raw byte body (for malformed JSON test). Returns HTTP status."""
+    req = Request(
+        f"http://localhost:{port}/api/entry",
+        data=raw_body,
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req) as r:
+            return r.status
+    except HTTPError as e:
+        return e.code
+
+
+def _delete_raw(port: int, raw_body: bytes) -> int:
+    req = Request(
+        f"http://localhost:{port}/api/entry",
+        data=raw_body,
+        method="DELETE",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req) as r:
+            return r.status
+    except HTTPError as e:
+        return e.code
+
+
+def test_api_entry_put_updates_body_and_metadata(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+    _put_json(port, {
+        "path": str(target),
+        "name": "Patched name",
+        "description": "Patched desc",
+        "body": "**Patched:** new body content.\n",
+    })
+    text = target.read_text(encoding="utf-8")
+    assert "name: Patched name" in text
+    assert "description: Patched desc" in text
+    assert "**Patched:** new body content." in text
+    assert "**Why:** because of X" not in text
+
+
+def test_api_entry_put_partial_only_description(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+    _put_json(port, {"path": str(target), "description": "Only desc changed"})
+    text = target.read_text(encoding="utf-8")
+    assert "description: Only desc changed" in text
+    assert "name: First feedback" in text
+    assert "**Why:** because of X" in text
+
+
+def test_api_entry_put_path_traversal_403(server, mock_projects, tmp_path):
+    _, port = server
+    outside = tmp_path / "secret.md"
+    outside.write_text("---\nname: x\ntype: feedback\n---\nbody\n", encoding="utf-8")
+    with pytest.raises(HTTPError) as exc_info:
+        _put_json(port, {"path": str(outside), "name": "evil"})
+    assert exc_info.value.code == 403
+
+
+def test_api_entry_put_invalid_type_400(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+    with pytest.raises(HTTPError) as exc_info:
+        _put_json(port, {"path": str(target), "type": "bogus_type"})
+    assert exc_info.value.code == 400
+
+
+def test_api_entry_put_malformed_json_400(server):
+    _, port = server
+    assert _put_raw(port, b"{not valid json") == 400
+
+
+def test_api_entry_put_missing_path_400(server):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        _put_json(port, {"name": "no path"})
+    assert exc_info.value.code == 400
+
+
+def test_api_entry_put_nonexistent_file_404(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "does_not_exist.md"
+    with pytest.raises(HTTPError) as exc_info:
+        _put_json(port, {"path": str(target), "name": "ghost"})
+    assert exc_info.value.code == 404
+
+
+def test_api_entry_delete_removes_file(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+    assert target.exists()
+    _delete_json(port, {"path": str(target)})
+    assert not target.exists()
+
+
+def test_api_entry_delete_path_traversal_403(server, mock_projects, tmp_path):
+    _, port = server
+    outside = tmp_path / "secret.md"
+    outside.write_text("body\n", encoding="utf-8")
+    with pytest.raises(HTTPError) as exc_info:
+        _delete_json(port, {"path": str(outside)})
+    assert exc_info.value.code == 403
+    assert outside.exists()
+
+
+def test_api_entry_delete_nonexistent_404(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "does_not_exist.md"
+    with pytest.raises(HTTPError) as exc_info:
+        _delete_json(port, {"path": str(target)})
+    assert exc_info.value.code == 404
+
+
+def test_api_entry_delete_malformed_json_400(server):
+    _, port = server
+    assert _delete_raw(port, b"{garbage") == 400
+
+
+def test_api_entry_delete_missing_path_400(server):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        _delete_json(port, {})
+    assert exc_info.value.code == 400
+
+
+# === V2.2 SPA terminal theme + CRUD UI tripwires ===
+
+def test_spa_terminal_theme_tripwires(server):
+    """SPA must adopt terminal aesthetic: black bg + amber fg + monospace.
+
+    String-level tripwire (no headless browser) — fails if someone reverts
+    the V2.2 theme accidentally. Also asserts CRUD presence and preserves
+    the PR #3 marked.use XSS guard.
+    """
+    _, port = server
+    with urlopen(f"http://localhost:{port}/") as r:
+        html = r.read().decode("utf-8")
+    # color palette
+    assert "#0a0a0a" in html, "terminal black background missing"
+    assert "#ffb000" in html, "amber primary color missing"
+    # monospace font
+    assert "Cascadia Code" in html or "JetBrains Mono" in html, "monospace font missing"
+    # CRUD UI markers
+    assert "[edit]" in html, "edit button missing"
+    assert "[delete]" in html, "delete button missing"
+    assert "rm " in html and "[y/N]" in html, "terminal-style delete confirm missing"
+    # state machine guards
+    assert "'view'" in html and "'edit'" in html, "view/edit modes missing"
+    # CRUD HTTP methods
+    assert "'PUT'" in html, "PUT method call missing"
+    assert "'DELETE'" in html, "DELETE method call missing"
+    # PR #3 XSS guard preserved
+    assert "marked.use" in html, "PR #3 marked.use XSS guard removed!"
+
+
+def test_spa_keyboard_shortcuts(server):
+    """SPA must bind Escape (cancel) and Ctrl+S (save) keyboard shortcuts."""
+    _, port = server
+    with urlopen(f"http://localhost:{port}/") as r:
+        html = r.read().decode("utf-8")
+    assert "Escape" in html, "Escape keybinding missing"
+    assert "ctrlKey" in html, "Ctrl+S keybinding missing"
+
+
+# === codex P1+P2 follow-up tests ===
+
+def test_api_entry_delete_rejects_non_memory_403(server, mock_projects):
+    """codex P1: DELETE on a path under projects_root but not memory/ → 403"""
+    _, port = server
+    project = mock_projects / "D--test-normal"
+    sessions = project / "sessions"
+    sessions.mkdir(parents=True)
+    target = sessions / "abc-123.jsonl"
+    target.write_text("session log\n", encoding="utf-8")
+
+    with pytest.raises(HTTPError) as exc_info:
+        _delete_json(port, {"path": str(target)})
+    assert exc_info.value.code == 403, "non-memory file delete must return 403"
+    assert target.exists(), "non-memory file must NOT be deleted"
+
+
+def test_api_entry_put_non_string_body_400(server, mock_projects):
+    """codex P2: PUT with non-string body returns 400, not 500"""
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+    with pytest.raises(HTTPError) as exc_info:
+        _put_json(port, {"path": str(target), "body": 123})
+    assert exc_info.value.code == 400, "non-string body must return 400"
