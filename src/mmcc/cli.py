@@ -103,6 +103,11 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="Body text inline; if omitted, opens $EDITOR")
     add.add_argument("--origin-session-id", dest="origin_session_id", default=None)
 
+    np = sub.add_parser("notepad", help="Launch local web viewer for all memory", parents=[common])
+    np.add_argument("--port", type=int, default=None, help="Port (default: auto from 8765)")
+    np.add_argument("--host", default="localhost", help="Bind host (default: localhost)")
+    np.add_argument("--no-browser", action="store_true", help="Do not auto-open browser")
+
     return p
 
 
@@ -300,6 +305,21 @@ def _cmd_add(args: argparse.Namespace, store: MemoryStore) -> int:
     return 0
 
 
+def _cmd_notepad(args: argparse.Namespace, store: MemoryStore) -> int:
+    from .notepad import start_server
+    try:
+        start_server(
+            store,
+            host=args.host,
+            port=args.port,
+            open_browser=not args.no_browser,
+        )
+    except OSError as e:
+        print(f"Error starting server: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
 _HANDLERS = {
     "tree": _cmd_tree,
     "list": _cmd_list,
@@ -308,6 +328,7 @@ _HANDLERS = {
     "edit": _cmd_edit,
     "which": _cmd_which,
     "add": _cmd_add,
+    "notepad": _cmd_notepad,
 }
 
 
