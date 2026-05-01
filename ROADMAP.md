@@ -32,6 +32,22 @@ Shipped via PRs #2 / #3 / #4. Adds an experimental `mmcc notepad` subcommand —
 
 `MemoryStore` reused unchanged — `notepad.py` is a thin HTTP wrapper. Architecture invariant holds.
 
+## V2.2 — Released (Terminal aesthetic + memory CRUD)
+
+Shipped via PR #5. Promotes `mmcc notepad` from a read-only viewer to a full editor with terminal-style UI.
+
+- **Terminal SPA rewrite** — black background (`#0a0a0a`) + amber primary (`#ffb000`) + Cascadia Code / JetBrains Mono / Consolas monospace + ASCII borders. `[F]/[U]/[P]/[R]` single-letter type badges, blinking cursor, inverted highlight on selected entry. CSS variables (`--bg`/`--fg`/`--accent`/`--danger`) make future theme tweaks one-line.
+- **Inline edit mode** — click `[edit]` to switch the right pane into a form (`<input>` name + description, `<textarea>` body). `Ctrl+S` saves via `PUT /api/entry`, `Esc` cancels. State machine guards: clicking `[delete]` while editing first exits edit mode (avoids data-loss ambiguity).
+- **Delete confirm prompt** — terminal-style `rm <path>? [y/N]_` with blinking cursor, two-step confirmation (button + `y`/`n` keyboard).
+- **`MemoryStore.update_entry(body=)`** — extends the V2 frontmatter-only patch API to accept full body content, partial-update semantics preserved (passing `None` keeps the existing value).
+- **`MemoryStore.delete_entry(file_path)`** — new method. Restricted to memory entries (`<project>/memory/*.md`); calling on a non-entry file raises `ValueError`. Avoids accidental deletion of `sessions/*.jsonl` or other project files (codex P1 guard).
+- **Atomic writes** — both `add_entry` and `update_entry` now use `tempfile.mkstemp + os.replace` for write atomicity. A mid-write process crash never leaves a half-written `.md` file on disk. Same-volume `tempfile` placement avoids Windows cross-drive `os.replace` failures.
+- **Body type validation** — `update_entry` raises `ValueError` if the API client sends a non-string body (e.g. `{"body": 123}` from a malformed JSON client), so the handler returns a controlled 400 instead of crashing with `AttributeError` (codex P2 guard).
+- **PUT `/api/entry`** — `{path, name?, description?, body?}` JSON body. Partial update; missing fields preserved. 200/400/403/404 error contract.
+- **DELETE `/api/entry`** — `{path}` JSON body. 200/400/403/404. Path-traversal guard via `_safe_resolve`, entry-shape guard via `delete_entry`.
+
+`MemoryStore` API surface grew (one new method + one extended kwarg), but architecture invariant still holds — CLI, Skill, MCP layers see the same library.
+
 ## V3 — Next
 
 Lightweight enhancements that still reuse `MemoryStore` unchanged.

@@ -99,7 +99,7 @@ mmcc add --type feedback --name "lesson learned" \
 mmcc add --type project --name "context note" \
          --description "background" --project gateway   # Omit --body to open $EDITOR
 
-# Launch local web viewer for all memory across projects (V2.1)
+# Launch local web viewer + CRUD editor for all memory (V2.1 viewer · V2.2 terminal + CRUD)
 mmcc notepad                                            # Auto-pick port from 8765
 mmcc notepad --port 8080                                # Use a specific port
 mmcc notepad --no-browser                               # Don't auto-open browser
@@ -114,6 +114,8 @@ mmcc notepad --no-browser                               # Don't auto-open browse
 `mmcc edit <ref> --name/--description/--type` patches frontmatter in place without opening the editor; unknown frontmatter keys are preserved. Pass no flags to fall back to `$EDITOR`.
 
 `mmcc notepad` opens a local SPA at `http://localhost:8765` (or the next free port from 8766) showing all memory across projects with a type filter and live search. Pure stdlib HTTP server, marked.js loads from CDN. Cross-platform port-conflict detection via `connect_ex` probe — auto-switches to the next free port when 8765 is busy, or raises a clear error if `--port <N>` is explicitly occupied. Memory bodies render as markdown with raw HTML stripped (so any `<script>` inside a body shows as text, never executes).
+
+V2.2 ships a **terminal aesthetic** (black background `#0a0a0a` + amber `#ffb000` + Cascadia Code monospace + ASCII borders) and **CRUD inline**: click `[edit]` to modify name / description / body in place (`Ctrl+S` to save, `Esc` to cancel), or `[delete]` for a `rm <path>? [y/N]` confirm prompt. Deletion is restricted to memory entries (`<project>/memory/*.md`) — non-entry files under the projects tree (e.g. `sessions/*.jsonl`) cannot be deleted via the API. Writes use atomic `tempfile + os.replace` so a mid-write crash never leaves a half-written file on disk.
 
 ## Output formats
 
