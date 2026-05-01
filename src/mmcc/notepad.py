@@ -504,6 +504,12 @@ _INDEX_HTML = r"""<!DOCTYPE html>
   </div>
   <div class="divider"></div>
   <span class="stat" id="stat"></span>
+  <button class="icon-btn" id="refresh-btn" title="刷新（重拉项目树，编辑模式时不动 viewer）">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M13.5 2v3h-3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+  </button>
 </header>
 <div id="app">
   <aside id="tree"></aside>
@@ -822,6 +828,15 @@ document.getElementById('type-tabs').addEventListener('click', (ev) => {
 document.getElementById('toggle-sidebar').addEventListener('click', () => {
   document.getElementById('tree').classList.toggle('collapsed');
 });
+document.getElementById('refresh-btn').addEventListener('click', refreshAll);
+
+async function refreshAll() {
+  // 编辑/删除确认中保护用户未提交的输入, 仅刷新左侧树; view 模式才重拉当前条目
+  await loadProjects();
+  if (selected && mode === 'view') {
+    await selectEntry(selected.file_path);
+  }
+}
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape') {
