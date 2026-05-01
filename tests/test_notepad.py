@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from pathlib import Path
 from urllib.error import HTTPError
@@ -11,6 +12,8 @@ import pytest
 from mmcc.notepad import (
     _ThreadedServer,
     _find_free_port,
+    _port_in_use,
+    _resolve_listen_port,
     _safe_resolve,
     _projects_payload,
     _entry_payload,
@@ -37,6 +40,61 @@ def test_find_free_port_returns_int():
     port = _find_free_port()
     assert isinstance(port, int)
     assert 1024 <= port <= 65535
+
+
+@pytest.fixture
+def busy_port():
+    """Yield (host, port) with an active LISTEN socket — simulates 'another
+    project already serving on this port'. Used to verify mmcc detects the
+    occupation instead of bind-overlapping silently (Windows quirk).
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("localhost", 0))
+    s.listen(128)
+    try:
+        yield "localhost", s.getsockname()[1]
+    finally:
+        s.close()
+
+
+def test_port_in_use_detects_active_listener(busy_port):
+    host, port = busy_port
+    assert _port_in_use(host, port) is True
+
+
+def test_port_in_use_returns_false_for_free_port():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("localhost", 0))
+    free_port = s.getsockname()[1]
+    s.close()
+    assert _port_in_use("localhost", free_port) is False
+
+
+def test_find_free_port_skips_listening_port(busy_port):
+    host, port = busy_port
+    result = _find_free_port(host, preferred=port)
+    assert result != port
+    assert isinstance(result, int)
+
+
+def test_resolve_listen_port_auto_when_none():
+    port = _resolve_listen_port("localhost", None)
+    assert isinstance(port, int)
+    assert 1024 <= port <= 65535
+
+
+def test_resolve_listen_port_passes_through_if_free():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("localhost", 0))
+    free_port = s.getsockname()[1]
+    s.close()
+    assert _resolve_listen_port("localhost", free_port) == free_port
+
+
+def test_resolve_listen_port_raises_if_explicit_port_in_use(busy_port):
+    host, port = busy_port
+    with pytest.raises(OSError):
+        _resolve_listen_port(host, port)
 
 
 def test_safe_resolve_within_root(tmp_path):
