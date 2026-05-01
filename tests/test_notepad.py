@@ -388,29 +388,38 @@ def test_api_entry_delete_missing_path_400(server):
     assert exc_info.value.code == 400
 
 
-# === V2.2 SPA terminal theme + CRUD UI tripwires ===
+# === SPA design-refresh + CRUD UI tripwires ===
 
-def test_spa_terminal_theme_tripwires(server):
-    """SPA must adopt terminal aesthetic: black bg + amber fg + monospace.
+def test_spa_design_refresh_tripwires(server):
+    """SPA must adopt the design-refresh aesthetic: light Inter UI + blue
+    accent + per-type color pills + Notion-style toolbar.
 
-    String-level tripwire (no headless browser) — fails if someone reverts
-    the V2.2 theme accidentally. Also asserts CRUD presence and preserves
-    the PR #3 marked.use XSS guard.
+    String-level tripwire (no headless browser) — fails if the design is
+    silently reverted. Also asserts CRUD presence and preserves the PR #3
+    marked.use XSS guard.
     """
     _, port = server
     with urlopen(f"http://localhost:{port}/") as r:
         html = r.read().decode("utf-8")
-    # color palette
-    assert "#0a0a0a" in html, "terminal black background missing"
-    assert "#ffb000" in html, "amber primary color missing"
-    # monospace font
-    assert "Cascadia Code" in html or "JetBrains Mono" in html, "monospace font missing"
-    # CRUD UI markers
-    assert "[edit]" in html, "edit button missing"
-    assert "[delete]" in html, "delete button missing"
-    assert "rm " in html and "[y/N]" in html, "terminal-style delete confirm missing"
+    # design-refresh palette: blue accent + light surface
+    assert "#2563eb" in html, "blue accent color missing"
+    assert "--bg-panel" in html, "light surface tokens missing"
+    # type-pill color vocabulary (one var per type)
+    for tok in ("--type-feedback", "--type-user", "--type-project", "--type-reference"):
+        assert tok in html, f"type color token {tok} missing"
+    # font stack: Inter for UI + JetBrains Mono for code/breadcrumb
+    assert "Inter" in html, "Inter UI font missing"
+    assert "JetBrains Mono" in html, "JetBrains Mono code font missing"
+    # CRUD UI markers (Chinese labels per design-refresh)
+    assert "编辑" in html, "edit button missing"
+    assert "删除" in html, "delete button missing"
+    assert "确认删除" in html, "delete confirm prompt missing"
+    # breadcrumb structure (project / memory / filename)
+    assert "breadcrumb" in html, "breadcrumb container missing"
+    assert "project_short" in html, "breadcrumb must reference project_short"
     # state machine guards
     assert "'view'" in html and "'edit'" in html, "view/edit modes missing"
+    assert "'confirm-delete'" in html, "confirm-delete mode missing"
     # CRUD HTTP methods
     assert "'PUT'" in html, "PUT method call missing"
     assert "'DELETE'" in html, "DELETE method call missing"
@@ -419,12 +428,15 @@ def test_spa_terminal_theme_tripwires(server):
 
 
 def test_spa_keyboard_shortcuts(server):
-    """SPA must bind Escape (cancel) and Ctrl+S (save) keyboard shortcuts."""
+    """SPA must bind Escape (cancel), Ctrl/Cmd+S (save), Ctrl/Cmd+K (search)."""
     _, port = server
     with urlopen(f"http://localhost:{port}/") as r:
         html = r.read().decode("utf-8")
     assert "Escape" in html, "Escape keybinding missing"
-    assert "ctrlKey" in html, "Ctrl+S keybinding missing"
+    # design-refresh uses (ev.ctrlKey || ev.metaKey) — both tokens present
+    assert "ctrlKey" in html, "ctrlKey binding missing"
+    assert "metaKey" in html, "metaKey binding missing (Cmd shortcuts)"
+    assert "'k'" in html, "Cmd/Ctrl+K search shortcut missing"
 
 
 # === codex P1+P2 follow-up tests ===
