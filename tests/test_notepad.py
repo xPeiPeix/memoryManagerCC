@@ -439,6 +439,21 @@ def test_spa_keyboard_shortcuts(server):
     assert "'k'" in html, "Cmd/Ctrl+K search shortcut missing"
 
 
+def test_spa_refresh_button_present(server):
+    """SPA must expose a refresh button that re-pulls the project tree.
+
+    Edit-mode protection: refresh must NOT re-fetch the current entry while
+    user is editing or in confirm-delete (would drop unsaved input).
+    """
+    _, port = server
+    with urlopen(f"http://localhost:{port}/") as r:
+        html = r.read().decode("utf-8")
+    assert 'id="refresh-btn"' in html, "refresh button missing"
+    assert "refreshAll" in html, "refreshAll handler missing"
+    # protection: only re-fetch entry when in view mode
+    assert "mode === 'view'" in html, "refresh must guard against edit-mode reload"
+
+
 # === codex P1+P2 follow-up tests ===
 
 def test_api_entry_delete_rejects_non_memory_403(server, mock_projects):
