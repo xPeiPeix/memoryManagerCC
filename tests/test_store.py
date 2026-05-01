@@ -695,3 +695,71 @@ class TestAddEntryAtomicWrite:
                 )
 
         assert not target_file.exists()
+
+
+class TestCodexP1DeleteScope:
+    """codex P1: DELETE must be restricted to memory entry files
+
+    Reason: _safe_resolve only checks path is under projects_root, but
+    projects_root contains non-entry files (sessions/*.jsonl, project-level
+    docs, etc). Without entry-shape check, client can delete arbitrary
+    files. mmcc memory entries are <project>/memory/<type>_<slug>.md.
+    """
+
+    def test_delete_entry_rejects_non_memory_dir(self, mock_projects: Path, tmp_path: Path):
+        # File outside any memory/ dir but inside the project tree
+        project = mock_projects / "D--test-normal"
+        non_memory = project / "sessions"
+        non_memory.mkdir(parents=True)
+        target = non_memory / "abc-123.jsonl"
+        target.write_text("session log\n", encoding="utf-8")
+
+        store = MemoryStore(mock_projects)
+        with pytest.raises(ValueError, match="memory entry"):
+            store.delete_entry(target)
+        assert target.exists(), "non-memory file must NOT be deleted"
+
+    def test_delete_entry_rejects_non_md_extension(self, mock_projects: Path):
+        # File inside memory/ but not .md (e.g. accidental backup)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md.bak"
+        target.write_text("backup\n", encoding="utf-8")
+
+        store = MemoryStore(mock_projects)
+        with pytest.raises(ValueError, match="memory entry"):
+            store.delete_entry(target)
+        assert target.exists()
+
+    def test_delete_entry_accepts_memory_md(self, mock_projects: Path):
+        # Sanity: real memory entry still deletes (no regression)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        store = MemoryStore(mock_projects)
+        store.delete_entry(target)
+        assert not target.exists()
+
+
+class TestCodexP2UpdateBodyType:
+    """codex P2: update_entry must validate body type
+
+    Reason: body.endswith("\\n") raises AttributeError if client sends
+    JSON like {"body": 123}. do_PUT only catches (ValueError, OSError),
+    so non-str body → 500 instead of controlled 400.
+    """
+
+    def test_update_entry_rejects_int_body(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        with pytest.raises(ValueError, match="body must be"):
+            store.update_entry(target, body=123)
+
+    def test_update_entry_rejects_list_body(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        with pytest.raises(ValueError, match="body must be"):
+            store.update_entry(target, body=["line1", "line2"])
+
+    def test_update_entry_accepts_str_body(self, mock_projects: Path):
+        # Sanity: str body still works (no regression)
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
+        store.update_entry(target, body="new body\n")
+        assert "new body" in target.read_text(encoding="utf-8")

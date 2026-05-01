@@ -515,6 +515,8 @@ class MemoryStore:
                      description: Optional[str] = None,
                      type: Optional[str] = None,
                      body: Optional[str] = None) -> MemoryEntry:
+        if body is not None and not isinstance(body, str):
+            raise ValueError(f"body must be string or None, got {body.__class__.__name__}")
         try:
             text = file_path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as e:
@@ -544,6 +546,9 @@ class MemoryStore:
         return entry
 
     def delete_entry(self, file_path: Path) -> None:
+        # mmcc memory entry 必须形如 <project>/memory/*.md，避免误删 sessions/*.jsonl 等
+        if file_path.parent.name != "memory" or file_path.suffix != ".md":
+            raise ValueError(f"Not a memory entry: {file_path}")
         file_path.unlink()
         self._short_ids_cache = None
         self._common_prefix_cache = None

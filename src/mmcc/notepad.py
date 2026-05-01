@@ -167,6 +167,9 @@ def make_handler(store: MemoryStore, projects_root: Path):
             except FileNotFoundError:
                 self._serve_json({"error": "not found"}, 404)
                 return
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, 403)
+                return
             except OSError as e:
                 self._serve_json({"error": str(e)}, 400)
                 return
