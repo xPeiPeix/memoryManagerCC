@@ -104,6 +104,8 @@ def _entry_payload(store: MemoryStore, target: Path) -> Optional[dict]:
         "file_path": str(entry.file_path),
         "project_id": entry.project_id,
         "project_path": entry.project_path,
+        "project_short": store.short_id(entry.project_id),
+        "mtime": entry.mtime,
     }
 
 
@@ -266,129 +268,258 @@ _INDEX_HTML = r"""<!DOCTYPE html>
 <meta charset="UTF-8">
 <title>mmcc notepad</title>
 <link rel="icon" href="data:,">
-
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
   * { box-sizing: border-box; }
   :root {
-    --bg: #0a0a0a;
-    --bg-dim: #141414;
-    --bg-hi: #1d1d1d;
-    --fg: #ffb000;
-    --fg-dim: #b07700;
-    --fg-mute: #666;
-    --accent: #00ff66;
-    --danger: #ff4040;
+    --bg: #ffffff;
+    --bg-panel: #fafaf9;
+    --bg-panel-alt: #f4f4f3;
+    --bg-hover: #f0f0ee;
+    --bg-code: #0f1419;
+    --bg-code-fg: #e1e4e8;
+    --border: #e8e8e6;
+    --border-soft: #efefed;
+    --ink: #1a1a1a;
+    --ink-soft: #525252;
+    --ink-mute: #8a8a87;
+    --accent: #2563eb;
+    --accent-hover: #1d4ed8;
+    --accent-soft: #eff4ff;
+    --accent-border: #bfd4fe;
+    --danger: #dc2626;
+    --danger-soft: #fef2f2;
+    --danger-border: #fca5a5;
+    --type-feedback: #d97706; --type-feedback-bg: #fef4e6;
+    --type-user: #16a34a;     --type-user-bg: #ecfdf3;
+    --type-project: #2563eb;  --type-project-bg: #eff4ff;
+    --type-reference: #7c3aed;--type-reference-bg: #f3eefe;
+    --type-unknown: #6b7280;  --type-unknown-bg: #f3f4f6;
+    --code-inline-fg: #b91c5c;
   }
   html, body { margin: 0; padding: 0; height: 100%;
-    font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
-    font-size: 13px; line-height: 1.5; }
-  body { display: flex; flex-direction: column; height: 100vh;
-    background: var(--bg); color: var(--fg); }
-  header { background: var(--bg); color: var(--fg); padding: 8px 14px;
-    display: flex; gap: 12px; align-items: center; flex-shrink: 0;
-    border-bottom: 1px solid var(--fg-dim); }
-  header .prompt { color: var(--accent); white-space: nowrap; }
-  header .cursor { animation: blink 1s steps(2) infinite;
-    display: inline-block; width: 8px; background: var(--fg); }
-  @keyframes blink { 50% { opacity: 0; } }
-  header input, header select { padding: 4px 8px;
-    background: var(--bg-dim); color: var(--fg); border: 1px solid var(--fg-dim);
-    font-family: inherit; font-size: inherit; }
-  header input:focus, header select:focus { outline: none; border-color: var(--fg); }
-  header input { flex: 1; min-width: 200px; }
-  header .stat { font-size: 12px; color: var(--fg-mute); white-space: nowrap; }
+    font-family: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 13.5px; color: var(--ink); background: var(--bg);
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  body { display: flex; flex-direction: column; height: 100vh; }
+
+  /* Header */
+  header { flex-shrink: 0; height: 48px; padding: 0 16px;
+    background: var(--bg); border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 12px; }
+  .icon-btn { background: transparent; border: none; padding: 6px;
+    border-radius: 5px; cursor: pointer; color: var(--ink-soft);
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background 0.12s; }
+  .icon-btn:hover { background: var(--bg-hover); }
+  .brand { display: flex; align-items: center; gap: 8px; }
+  .brand .logo { width: 22px; height: 22px; border-radius: 6px;
+    background: var(--accent); color: #fff; font-weight: 700; font-size: 11px;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .brand .name { font-weight: 600; font-size: 14px; }
+  .brand .sub { color: var(--ink-mute); font-size: 13px; }
+  .search-wrap { flex: 1; max-width: 480px; margin-left: 24px; position: relative; }
+  .search-wrap svg { position: absolute; left: 10px; top: 50%;
+    transform: translateY(-50%); color: var(--ink-mute); }
+  .search-wrap input { width: 100%; height: 32px; padding: 0 50px 0 30px;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: var(--bg-panel); color: var(--ink);
+    font-family: inherit; font-size: 13px; outline: none; transition: border-color 0.12s, box-shadow 0.12s; }
+  .search-wrap input:focus { border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft); background: #fff; }
+  .search-wrap .kbd { position: absolute; right: 8px; top: 50%;
+    transform: translateY(-50%); font-size: 11px; color: var(--ink-mute);
+    background: #fff; border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; font-family: "JetBrains Mono", monospace; pointer-events: none; }
+  .spacer { flex: 1; }
+  .type-tabs { display: flex; gap: 2px; }
+  .type-tab { padding: 5px 10px; border-radius: 5px; font-size: 12.5px;
+    border: none; cursor: pointer; background: transparent;
+    color: var(--ink-soft); font-family: inherit; font-weight: 400;
+    transition: background 0.12s, color 0.12s; }
+  .type-tab:hover { background: var(--bg-hover); color: var(--ink); }
+  .type-tab.active { background: var(--bg-panel-alt); color: var(--ink); font-weight: 500; }
+  .divider { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+  .stat { color: var(--ink-mute); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+  /* Layout */
   #app { flex: 1; display: flex; min-height: 0; overflow: hidden; }
-  aside { width: 360px; flex-shrink: 0; overflow-y: auto;
-    background: var(--bg); border-right: 1px solid var(--fg-dim); }
-  aside .project { padding: 6px 12px; background: var(--bg-dim);
-    border-bottom: 1px solid var(--fg-dim); cursor: pointer; user-select: none;
-    color: var(--fg); }
-  aside .project::before { content: '> '; color: var(--accent); }
-  aside .project.collapsed::before { content: 'v '; }
-  aside .project .count { color: var(--fg-mute); margin-left: 6px; }
-  aside .project.collapsed + .entries { display: none; }
-  aside .entries { padding: 0; }
-  aside .entry { padding: 4px 12px 4px 24px; cursor: pointer;
-    border-left: 2px solid transparent; color: var(--fg-dim); }
-  aside .entry:hover { background: var(--bg-dim); color: var(--fg); }
-  aside .entry.selected { background: var(--fg); color: var(--bg);
+  aside { width: 280px; flex-shrink: 0; overflow-y: auto;
+    background: var(--bg-panel); border-right: 1px solid var(--border);
+    padding: 6px 0; transition: width 0.18s ease, opacity 0.18s ease; }
+  aside.collapsed { width: 0; opacity: 0; padding: 0; border-right: none; overflow: hidden; }
+  main { flex: 1; overflow-y: auto; background: var(--bg); }
+
+  /* Sidebar tree */
+  .project-row { display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px; cursor: pointer; user-select: none;
+    color: var(--ink-soft); font-size: 12.5px; }
+  .project-row:hover { background: var(--bg-hover); }
+  .project-row .chev { width: 10px; height: 10px; flex-shrink: 0;
+    color: var(--ink-mute); transition: transform 0.15s; }
+  .project-row.open .chev { transform: rotate(90deg); }
+  .project-row .pname { font-weight: 500; flex: 1; color: var(--ink);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .project-row .pcount { color: var(--ink-mute); font-size: 11.5px;
+    font-variant-numeric: tabular-nums; }
+  .entries-wrap { padding-bottom: 2px; }
+  .project-row.collapsed + .entries-wrap { display: none; }
+  .entry { padding: 5px 12px 5px 24px; cursor: pointer;
+    background: transparent; font-size: 12.5px;
+    display: flex; align-items: center; gap: 7px;
+    border-left: 2px solid transparent; transition: background 0.1s; }
+  .entry:hover { background: var(--bg-hover); }
+  .entry.selected { background: var(--accent-soft);
     border-left-color: var(--accent); }
-  .badge { display: inline-block; margin-right: 6px;
-    color: var(--fg); border: 1px solid var(--fg-dim); padding: 0 4px; }
-  .entry.selected .badge { color: var(--bg); border-color: var(--bg); }
-  main { flex: 1; padding: 16px 24px; overflow-y: auto; background: var(--bg); }
-  main h1 { margin: 0 0 4px; font-size: 18px; color: var(--fg);
-    border-bottom: 1px dashed var(--fg-dim); padding-bottom: 4px; }
-  main .meta { color: var(--fg-mute); margin-bottom: 14px; font-size: 12px; }
-  main .meta .row { margin: 4px 0; }
-  main .meta .description { display: block; margin: 6px 0; padding: 4px 8px;
-    border-left: 2px solid var(--accent); color: var(--fg); }
-  main .toolbar { margin: 8px 0; display: flex; gap: 6px; flex-wrap: wrap; }
-  main button, main .toolbar a { background: var(--bg); color: var(--fg);
-    border: 1px solid var(--fg-dim); padding: 3px 10px; cursor: pointer;
-    font-family: inherit; font-size: inherit; text-decoration: none; }
-  main button:hover, main .toolbar a:hover { background: var(--fg); color: var(--bg); }
-  main button.danger { color: var(--danger); border-color: var(--danger); }
-  main button.danger:hover { background: var(--danger); color: var(--bg); }
-  main .body { font-size: 13px; color: var(--fg); line-height: 1.7; }
-  main .body h1, main .body h2, main .body h3 { color: var(--fg);
-    border-bottom: 1px dashed var(--fg-dim); padding-bottom: 2px; }
-  main .body h1 { font-size: 16px; margin-top: 18px; }
-  main .body h2 { font-size: 14px; margin-top: 14px; }
-  main .body h3 { font-size: 13px; margin-top: 12px; }
-  main .body pre { background: var(--bg-dim); color: var(--fg);
-    border: 1px dashed var(--fg-dim); padding: 8px; overflow-x: auto; }
-  main .body :not(pre) > code { background: var(--bg-dim); color: var(--accent);
-    padding: 0 4px; border: 1px dashed var(--fg-dim); }
-  main .body table { border-collapse: collapse; }
-  main .body th, main .body td { padding: 4px 8px;
-    border: 1px solid var(--fg-dim); }
-  main .body blockquote { border-left: 2px solid var(--fg-dim);
-    padding-left: 10px; color: var(--fg-mute); margin-left: 0; }
-  main .body a { color: var(--accent); }
-  main .editor { display: flex; flex-direction: column; gap: 8px; }
-  main .editor label { color: var(--fg-mute); font-size: 12px; }
-  main .editor input, main .editor textarea { background: var(--bg-dim);
-    color: var(--fg); border: 1px solid var(--fg-dim); padding: 4px 8px;
-    font-family: inherit; font-size: inherit; }
-  main .editor input:focus, main .editor textarea:focus {
-    outline: none; border-color: var(--fg); }
-  main .editor textarea { min-height: 360px; resize: vertical; line-height: 1.5; }
-  main .confirm { padding: 12px; border: 1px solid var(--danger);
-    background: var(--bg-dim); color: var(--danger); }
-  main .confirm .cursor { animation: blink 1s steps(2) infinite;
-    display: inline-block; width: 8px; background: var(--danger); }
-  .empty { color: var(--fg-mute); text-align: center; margin-top: 80px; }
+  .entry .glyph { font-size: 9.5px; font-weight: 600;
+    padding: 1px 5px; border-radius: 3px; flex-shrink: 0;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    width: 18px; text-align: center; }
+  .entry .ename { color: var(--ink); flex: 1;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .entry.selected .ename { font-weight: 500; }
+
+  /* Type colors */
+  .glyph.t-feedback  { background: var(--type-feedback-bg);  color: var(--type-feedback); }
+  .glyph.t-user      { background: var(--type-user-bg);      color: var(--type-user); }
+  .glyph.t-project   { background: var(--type-project-bg);   color: var(--type-project); }
+  .glyph.t-reference { background: var(--type-reference-bg); color: var(--type-reference); }
+  .glyph.t-unknown   { background: var(--type-unknown-bg);   color: var(--type-unknown); }
+  .pill.t-feedback  { background: var(--type-feedback-bg);  color: var(--type-feedback); }
+  .pill.t-user      { background: var(--type-user-bg);      color: var(--type-user); }
+  .pill.t-project   { background: var(--type-project-bg);   color: var(--type-project); }
+  .pill.t-reference { background: var(--type-reference-bg); color: var(--type-reference); }
+  .pill.t-unknown   { background: var(--type-unknown-bg);   color: var(--type-unknown); }
+
+  /* Main viewer */
+  .viewer { max-width: 780px; margin: 0 auto; padding: 36px 56px 80px; }
+  .breadcrumb { display: flex; align-items: center; gap: 8px;
+    font-size: 12.5px; color: var(--ink-mute); margin-bottom: 18px;
+    font-family: "JetBrains Mono", ui-monospace, monospace; }
+  .breadcrumb .last { color: var(--ink-soft); }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 4px;
+    font-size: 11px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.05em; }
+  .viewer h1.title { font-weight: 600; font-size: 30px; line-height: 1.25;
+    margin: 8px 0 10px; letter-spacing: -0.02em; color: var(--ink); }
+  .viewer .desc { font-size: 15px; color: var(--ink-soft);
+    line-height: 1.55; margin: 0 0 20px; }
+  .toolbar { display: flex; align-items: center; gap: 6px;
+    padding-bottom: 16px; margin-bottom: 28px;
+    border-bottom: 1px solid var(--border); }
+  .btn { display: inline-flex; align-items: center; gap: 5px;
+    font-family: inherit; font-size: 12.5px; font-weight: 500;
+    padding: 6px 12px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--ink); transition: all 0.12s; }
+  .btn:hover { background: var(--bg-panel-alt); }
+  .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .btn.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn.danger { color: var(--danger); }
+  .btn.danger:hover { background: var(--danger-soft); border-color: var(--danger-border); }
+  .toolbar .mtime { font-size: 12px; color: var(--ink-mute);
+    font-variant-numeric: tabular-nums; }
+
+  /* Markdown body */
+  .body { font-size: 14px; color: var(--ink); line-height: 1.7; }
+  .body h1 { font-weight: 600; font-size: 20px; margin: 24px 0 8px;
+    letter-spacing: -0.015em; color: var(--ink); }
+  .body h2 { font-weight: 600; font-size: 16.5px; margin: 22px 0 6px;
+    letter-spacing: -0.01em; color: var(--ink); }
+  .body h3 { font-weight: 600; font-size: 14.5px; margin: 16px 0 4px; color: var(--ink); }
+  .body p { margin: 6px 0; }
+  .body ol, .body ul { padding-left: 22px; margin: 6px 0; }
+  .body li { margin: 3px 0; }
+  .body blockquote { border-left: 3px solid var(--accent);
+    padding: 6px 14px; margin: 10px 0; color: var(--ink-soft);
+    background: var(--accent-soft); border-radius: 0 4px 4px 0; }
+  .body pre { background: var(--bg-code); color: var(--bg-code-fg);
+    padding: 14px 16px; border-radius: 8px; overflow-x: auto;
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12.5px; line-height: 1.6; margin: 12px 0; }
+  .body :not(pre) > code { background: var(--bg-panel-alt);
+    color: var(--code-inline-fg); padding: 1.5px 6px;
+    border-radius: 4px; font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 12.5px; border: 1px solid var(--border-soft); }
+  .body table { border-collapse: collapse; margin: 10px 0; }
+  .body th, .body td { padding: 6px 12px; border: 1px solid var(--border); }
+  .body th { background: var(--bg-panel); font-weight: 600; }
+  .body a { color: var(--accent); text-decoration: none; }
+  .body a:hover { text-decoration: underline; }
+
+  /* Editor */
+  .editor { display: flex; flex-direction: column; gap: 10px; margin-top: 16px; }
+  .editor label { color: var(--ink-mute); font-size: 12px; font-weight: 500; }
+  .editor input, .editor textarea { background: var(--bg);
+    color: var(--ink); border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 12px; font-family: inherit;
+    font-size: 13.5px; outline: none; transition: border-color 0.12s, box-shadow 0.12s; }
+  .editor input:focus, .editor textarea:focus {
+    border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .editor textarea { min-height: 360px; resize: vertical; line-height: 1.6;
+    font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; }
+
+  /* Confirm */
+  .confirm { padding: 14px 16px; border: 1px solid var(--danger-border);
+    background: var(--danger-soft); color: var(--danger);
+    border-radius: 8px; margin-top: 16px; font-size: 13px; line-height: 1.5; }
+  .confirm code { background: rgba(220,38,38,0.08); padding: 1px 5px;
+    border-radius: 3px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+  .empty { color: var(--ink-mute); text-align: center; margin-top: 80px; font-size: 13px; }
 </style>
 </head>
 <body>
 <header>
-  <span class="prompt">mmcc@notepad:~$</span><span class="cursor">&nbsp;</span>
-  <input id="search" placeholder="grep memory..." />
-  <select id="type-filter">
-    <option value="">[all types]</option>
-    <option value="feedback">[F] feedback</option>
-    <option value="user">[U] user</option>
-    <option value="project">[P] project</option>
-    <option value="reference">[R] reference</option>
-    <option value="unknown">[?] unknown</option>
-  </select>
+  <button class="icon-btn" id="toggle-sidebar" title="收起/展开侧栏">
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+      <rect x="2" y="3" width="12" height="10" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M6 3v10" stroke="currentColor" stroke-width="1.3"/>
+      <rect x="3" y="5" width="2" height="1" fill="currentColor"/>
+      <rect x="3" y="7" width="2" height="1" fill="currentColor"/>
+    </svg>
+  </button>
+  <div class="brand">
+    <div class="logo">m</div>
+    <span class="name">mmcc</span>
+    <span class="sub">/ notepad</span>
+  </div>
+  <div class="search-wrap">
+    <svg width="14" height="14" viewBox="0 0 16 16" fill="none">
+      <circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M10.5 10.5L13 13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    <input id="search" placeholder="搜索 memory…" />
+    <span class="kbd">⌘K</span>
+  </div>
+  <div class="spacer"></div>
+  <div class="type-tabs" id="type-tabs">
+    <button class="type-tab active" data-type="">all</button>
+    <button class="type-tab" data-type="feedback">feedback</button>
+    <button class="type-tab" data-type="user">user</button>
+    <button class="type-tab" data-type="project">project</button>
+    <button class="type-tab" data-type="reference">reference</button>
+  </div>
+  <div class="divider"></div>
   <span class="stat" id="stat"></span>
 </header>
 <div id="app">
   <aside id="tree"></aside>
-  <main id="viewer"><div class="empty">// select a memory entry from the left tree</div></main>
+  <main id="viewer"><div class="empty">从左侧选择一条 memory 查看</div></main>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script>
-// PR #3 XSS guard: strip raw HTML token so memory bodies can't execute pasted <script>
-marked.use({ renderer: { html(token) { return ''; } } });
+// XSS guard — strip raw HTML from rendered markdown bodies (CLAUDE.md hard constraint)
+marked.use({ renderer: { html() { return ''; } } });
 
 const TYPE_GLYPH = { feedback: 'F', user: 'U', project: 'P', reference: 'R', unknown: '?' };
+const TYPE_LABEL = { feedback: 'feedback', user: 'user', project: 'project', reference: 'reference', unknown: 'note' };
 
 let projects = [];
 let selected = null;
-let mode = 'view';  // 'view' | 'edit' | 'confirm-delete'
+let mode = 'view';
 
 async function loadProjects() {
   try {
@@ -397,13 +528,13 @@ async function loadProjects() {
     projects = data.projects || [];
     renderTree();
   } catch (e) {
-    document.getElementById('tree').innerHTML = '<div class="empty">// load failed: ' + e.message + '</div>';
+    document.getElementById('tree').innerHTML = '<div class="empty">加载失败：' + escapeHTML(e.message) + '</div>';
   }
 }
 
 function renderTree() {
   const search = document.getElementById('search').value.toLowerCase().trim();
-  const typeFilter = document.getElementById('type-filter').value;
+  const typeFilter = document.querySelector('.type-tab.active').dataset.type;
   const tree = document.getElementById('tree');
   tree.innerHTML = '';
   let totalShown = 0;
@@ -411,35 +542,45 @@ function renderTree() {
     const matched = p.entries.filter(e => {
       if (typeFilter && e.type !== typeFilter) return false;
       if (!search) return true;
-      const hay = (e.name + ' ' + e.description + ' ' + e.filename).toLowerCase();
+      const hay = (e.name + ' ' + (e.description || '') + ' ' + e.filename).toLowerCase();
       return hay.includes(search);
     });
     if (matched.length === 0) continue;
     totalShown += matched.length;
+
     const projDiv = document.createElement('div');
-    projDiv.className = 'project';
-    projDiv.innerHTML = escapeHTML(p.short_id) + '<span class="count">(' + matched.length + ')</span>';
-    projDiv.onclick = () => projDiv.classList.toggle('collapsed');
+    projDiv.className = 'project-row open';
+    projDiv.innerHTML =
+      '<svg class="chev" viewBox="0 0 10 10"><path d="M3 2l4 3-4 3z" fill="currentColor"/></svg>' +
+      '<span class="pname">' + escapeHTML(p.short_id) + '</span>' +
+      '<span class="pcount">' + matched.length + '</span>';
+    projDiv.onclick = () => {
+      projDiv.classList.toggle('collapsed');
+      projDiv.classList.toggle('open');
+    };
     tree.appendChild(projDiv);
-    const entriesDiv = document.createElement('div');
-    entriesDiv.className = 'entries';
+
+    const wrap = document.createElement('div');
+    wrap.className = 'entries-wrap';
     for (const e of matched) {
-      const entryDiv = document.createElement('div');
-      entryDiv.className = 'entry';
-      entryDiv.dataset.path = e.file_path;
-      const glyph = TYPE_GLYPH[e.type] || '?';
-      entryDiv.innerHTML = '<span class="badge">' + glyph + '</span>' + escapeHTML(e.name);
-      entryDiv.title = e.description || e.filename;
-      entryDiv.onclick = () => selectEntry(e.file_path);
-      entriesDiv.appendChild(entryDiv);
+      const row = document.createElement('div');
+      row.className = 'entry';
+      row.dataset.path = e.file_path;
+      const tkey = TYPE_GLYPH[e.type] ? e.type : 'unknown';
+      const glyph = TYPE_GLYPH[tkey];
+      row.innerHTML =
+        '<span class="glyph t-' + tkey + '">' + glyph + '</span>' +
+        '<span class="ename">' + escapeHTML(e.name) + '</span>';
+      row.title = e.description || e.filename;
+      row.onclick = () => selectEntry(e.file_path);
+      wrap.appendChild(row);
     }
-    tree.appendChild(entriesDiv);
+    tree.appendChild(wrap);
   }
-  document.getElementById('stat').textContent = totalShown + ' entries / ' + projects.length + ' projects';
+  document.getElementById('stat').textContent = totalShown + ' 条';
   if (totalShown === 0) {
-    tree.innerHTML = '<div class="empty">// no matches</div>';
+    tree.innerHTML = '<div class="empty">无匹配结果</div>';
   }
-  // re-highlight selected after re-render
   if (selected) {
     document.querySelectorAll('.entry').forEach(el => {
       el.classList.toggle('selected', el.dataset.path === selected.file_path);
@@ -454,101 +595,149 @@ async function selectEntry(filePath) {
   try {
     const r = await fetch('/api/entry?path=' + encodeURIComponent(filePath));
     if (!r.ok) {
-      document.getElementById('viewer').innerHTML = '<div class="empty">// load failed: ' + r.status + '</div>';
+      document.getElementById('viewer').innerHTML = '<div class="empty">加载失败：' + r.status + '</div>';
       return;
     }
-    const e = await r.json();
-    selected = e;
+    selected = await r.json();
     mode = 'view';
     renderEntry();
   } catch (err) {
-    document.getElementById('viewer').innerHTML = '<div class="empty">// network error: ' + err.message + '</div>';
+    document.getElementById('viewer').innerHTML = '<div class="empty">网络错误：' + escapeHTML(err.message) + '</div>';
   }
 }
 
 function renderEntry() {
   const v = document.getElementById('viewer');
   v.innerHTML = '';
-  if (!selected) { v.innerHTML = '<div class="empty">// no entry selected</div>'; return; }
-
+  if (!selected) { v.innerHTML = '<div class="empty">未选中任何条目</div>'; return; }
   const e = selected;
-  const h1 = document.createElement('h1');
-  h1.textContent = '[' + (TYPE_GLYPH[e.type] || '?') + '] ' + e.name;
-  v.appendChild(h1);
+  const wrap = document.createElement('div');
+  wrap.className = 'viewer';
 
-  const meta = document.createElement('div'); meta.className = 'meta';
-  meta.innerHTML =
-    '<div class="row">project: ' + escapeHTML(e.project_path) + '</div>' +
-    '<div class="row">file: ' + escapeHTML(e.filename) + '</div>' +
-    '<div class="row">type: ' + escapeHTML(e.type) + '</div>';
+  const tkey = TYPE_GLYPH[e.type] ? e.type : 'unknown';
+
+  const crumb = document.createElement('div');
+  crumb.className = 'breadcrumb';
+  crumb.innerHTML =
+    '<span>' + escapeHTML(e.project_short || e.project_path || '') + '</span>' +
+    '<span>/</span><span>memory</span><span>/</span>' +
+    '<span class="last">' + escapeHTML(e.filename) + '</span>';
+  wrap.appendChild(crumb);
+
+  const pillWrap = document.createElement('div');
+  pillWrap.innerHTML = '<span class="pill t-' + tkey + '">' + escapeHTML(TYPE_LABEL[tkey]) + '</span>';
+  wrap.appendChild(pillWrap);
+
+  const title = document.createElement('h1');
+  title.className = 'title';
+  title.textContent = e.name;
+  wrap.appendChild(title);
+
   if (e.description) {
-    const d = document.createElement('span'); d.className = 'description';
-    d.textContent = '// ' + e.description; meta.appendChild(d);
+    const desc = document.createElement('p');
+    desc.className = 'desc';
+    desc.textContent = e.description;
+    wrap.appendChild(desc);
   }
-  v.appendChild(meta);
 
-  if (mode === 'view') { renderViewMode(v, e); }
-  else if (mode === 'edit') { renderEditMode(v, e); }
-  else if (mode === 'confirm-delete') { renderConfirmDelete(v, e); }
+  if (mode === 'view') renderViewMode(wrap, e);
+  else if (mode === 'edit') renderEditMode(wrap, e);
+  else if (mode === 'confirm-delete') renderConfirmDelete(wrap, e);
+
+  v.appendChild(wrap);
 }
 
-function renderViewMode(v, e) {
-  const toolbar = document.createElement('div'); toolbar.className = 'toolbar';
-  const btnEdit = document.createElement('button'); btnEdit.textContent = '[edit]';
+function renderViewMode(wrap, e) {
+  const tb = document.createElement('div');
+  tb.className = 'toolbar';
+
+  const btnEdit = makeBtn('编辑', 'primary');
   btnEdit.onclick = () => { mode = 'edit'; renderEntry(); };
-  const btnDel = document.createElement('button'); btnDel.textContent = '[delete]';
-  btnDel.className = 'danger';
-  btnDel.onclick = () => { mode = 'confirm-delete'; renderEntry(); };
-  const btnCopy = document.createElement('button'); btnCopy.textContent = '[copy path]';
+  const btnCopy = makeBtn('复制路径');
   btnCopy.onclick = copyPath;
-  const btnVS = document.createElement('a'); btnVS.textContent = '[open in vscode]';
-  btnVS.href = 'vscode://file/' + e.file_path.replace(/\\/g, '/');
-  toolbar.appendChild(btnEdit); toolbar.appendChild(btnDel);
-  toolbar.appendChild(btnCopy); toolbar.appendChild(btnVS);
-  v.appendChild(toolbar);
+  const btnVS = document.createElement('a');
+  btnVS.className = 'btn';
+  btnVS.textContent = '在 VSCode 打开';
+  btnVS.href = 'vscode://file/' + (e.file_path || '').replace(/\\/g, '/');
 
-  const body = document.createElement('div'); body.className = 'body';
+  const spacer = document.createElement('span');
+  spacer.style.flex = '1';
+
+  const mt = document.createElement('span');
+  mt.className = 'mtime';
+  mt.textContent = e.mtime ? '最后修改 ' + formatMtime(e.mtime) : '';
+
+  const btnDel = makeBtn('删除', 'danger');
+  btnDel.onclick = () => { mode = 'confirm-delete'; renderEntry(); };
+
+  tb.appendChild(btnEdit); tb.appendChild(btnCopy); tb.appendChild(btnVS);
+  tb.appendChild(spacer); tb.appendChild(mt); tb.appendChild(btnDel);
+  wrap.appendChild(tb);
+
+  const body = document.createElement('div');
+  body.className = 'body';
   body.innerHTML = marked.parse(e.body || '');
-  v.appendChild(body);
+  wrap.appendChild(body);
 }
 
-function renderEditMode(v, e) {
-  const editor = document.createElement('div'); editor.className = 'editor';
+function renderEditMode(wrap, e) {
+  const editor = document.createElement('div');
+  editor.className = 'editor';
+  editor.innerHTML =
+    '<label>name</label><input id="inp-name" />' +
+    '<label>description</label><input id="inp-desc" />' +
+    '<label>body (markdown)</label><textarea id="inp-body"></textarea>';
+  wrap.appendChild(editor);
+  document.getElementById('inp-name').value = e.name || '';
+  document.getElementById('inp-desc').value = e.description || '';
+  document.getElementById('inp-body').value = e.body || '';
 
-  const lblName = document.createElement('label'); lblName.textContent = 'name:';
-  const inpName = document.createElement('input'); inpName.id = 'inp-name'; inpName.value = e.name;
-  const lblDesc = document.createElement('label'); lblDesc.textContent = 'description:';
-  const inpDesc = document.createElement('input'); inpDesc.id = 'inp-desc'; inpDesc.value = e.description || '';
-  const lblBody = document.createElement('label'); lblBody.textContent = 'body (markdown):';
-  const inpBody = document.createElement('textarea'); inpBody.id = 'inp-body'; inpBody.value = e.body || '';
+  const tb = document.createElement('div');
+  tb.className = 'toolbar';
+  tb.style.borderBottom = 'none';
+  tb.style.marginTop = '14px';
+  tb.style.paddingBottom = '0';
+  const save = makeBtn('保存 (⌘S)', 'primary');
+  save.onclick = saveEdit;
+  const cancel = makeBtn('取消 (Esc)');
+  cancel.onclick = () => { mode = 'view'; renderEntry(); };
+  tb.appendChild(save); tb.appendChild(cancel);
+  wrap.appendChild(tb);
 
-  editor.appendChild(lblName); editor.appendChild(inpName);
-  editor.appendChild(lblDesc); editor.appendChild(inpDesc);
-  editor.appendChild(lblBody); editor.appendChild(inpBody);
-
-  const toolbar = document.createElement('div'); toolbar.className = 'toolbar';
-  const btnSave = document.createElement('button'); btnSave.textContent = '[save] (Ctrl+S)';
-  btnSave.onclick = saveEdit;
-  const btnCancel = document.createElement('button'); btnCancel.textContent = '[cancel] (Esc)';
-  btnCancel.onclick = () => { mode = 'view'; renderEntry(); };
-  toolbar.appendChild(btnSave); toolbar.appendChild(btnCancel);
-  editor.appendChild(toolbar);
-
-  v.appendChild(editor);
-  setTimeout(() => inpName.focus(), 0);
+  setTimeout(() => document.getElementById('inp-name').focus(), 0);
 }
 
-function renderConfirmDelete(v, e) {
-  const c = document.createElement('div'); c.className = 'confirm';
-  c.innerHTML = 'rm ' + escapeHTML(e.file_path) + '? [y/N]<span class="cursor">&nbsp;</span>';
-  v.appendChild(c);
-  const toolbar = document.createElement('div'); toolbar.className = 'toolbar';
-  const btnYes = document.createElement('button'); btnYes.textContent = '[y] yes, delete';
-  btnYes.className = 'danger'; btnYes.onclick = confirmDelete;
-  const btnNo = document.createElement('button'); btnNo.textContent = '[n] cancel';
-  btnNo.onclick = () => { mode = 'view'; renderEntry(); };
-  toolbar.appendChild(btnYes); toolbar.appendChild(btnNo);
-  v.appendChild(toolbar);
+function renderConfirmDelete(wrap, e) {
+  const c = document.createElement('div');
+  c.className = 'confirm';
+  c.innerHTML = '确认删除 <code>' + escapeHTML(e.file_path) + '</code> ？此操作不可撤销。';
+  wrap.appendChild(c);
+  const tb = document.createElement('div');
+  tb.className = 'toolbar';
+  tb.style.borderBottom = 'none';
+  tb.style.marginTop = '14px';
+  tb.style.paddingBottom = '0';
+  const yes = makeBtn('确认删除', 'danger');
+  yes.onclick = confirmDelete;
+  const no = makeBtn('取消');
+  no.onclick = () => { mode = 'view'; renderEntry(); };
+  tb.appendChild(yes); tb.appendChild(no);
+  wrap.appendChild(tb);
+}
+
+function makeBtn(text, kind) {
+  const b = document.createElement('button');
+  b.className = 'btn' + (kind ? ' ' + kind : '');
+  b.textContent = text;
+  return b;
+}
+
+function formatMtime(mtime) {
+  const d = new Date(mtime * 1000);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
 }
 
 async function saveEdit() {
@@ -567,40 +756,43 @@ async function saveEdit() {
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      alert('save failed: ' + r.status + ' ' + (err.error || ''));
+      alert('保存失败：' + r.status + ' ' + (err.error || ''));
       return;
     }
-    const updated = await r.json();
-    selected = updated;
+    selected = await r.json();
     mode = 'view';
     renderEntry();
     loadProjects();
   } catch (err) {
-    alert('network error: ' + err.message);
+    alert('网络错误：' + err.message);
   }
 }
 
 async function confirmDelete() {
   if (!selected) return;
-  const payload = { path: selected.file_path };
   try {
     const r = await fetch('/api/entry', {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ path: selected.file_path }),
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      alert('delete failed: ' + r.status + ' ' + (err.error || ''));
+      alert('删除失败：' + r.status + ' ' + (err.error || ''));
       return;
     }
     selected = null;
     mode = 'view';
-    document.getElementById('viewer').innerHTML = '<div class="empty">// entry deleted</div>';
+    document.getElementById('viewer').innerHTML = '<div class="empty">条目已删除</div>';
     loadProjects();
   } catch (err) {
-    alert('network error: ' + err.message);
+    alert('网络错误：' + err.message);
   }
+}
+
+function copyPath() {
+  if (!selected) return;
+  navigator.clipboard.writeText(selected.file_path).catch(() => alert('复制失败'));
 }
 
 function escapeHTML(s) {
@@ -609,34 +801,26 @@ function escapeHTML(s) {
     .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 }
 
-function copyPath() {
-  if (!selected) return;
-  navigator.clipboard.writeText(selected.file_path).then(
-    () => { /* silent */ },
-    () => alert('copy failed: select manually')
-  );
-}
-
 document.getElementById('search').addEventListener('input', renderTree);
-document.getElementById('type-filter').addEventListener('change', renderTree);
+document.getElementById('type-tabs').addEventListener('click', (ev) => {
+  const t = ev.target.closest('.type-tab');
+  if (!t) return;
+  document.querySelectorAll('.type-tab').forEach(el => el.classList.toggle('active', el === t));
+  renderTree();
+});
+document.getElementById('toggle-sidebar').addEventListener('click', () => {
+  document.getElementById('tree').classList.toggle('collapsed');
+});
 
 document.addEventListener('keydown', (ev) => {
   if (ev.key === 'Escape') {
     if (mode === 'edit' || mode === 'confirm-delete') {
-      mode = 'view';
-      renderEntry();
-      ev.preventDefault();
-    }
-  } else if (ev.ctrlKey && ev.key === 's') {
-    if (mode === 'edit') {
-      saveEdit();
-      ev.preventDefault();
-    }
-  } else if (mode === 'confirm-delete') {
-    if (ev.key === 'y' || ev.key === 'Y') { confirmDelete(); ev.preventDefault(); }
-    else if (ev.key === 'n' || ev.key === 'N') {
       mode = 'view'; renderEntry(); ev.preventDefault();
     }
+  } else if ((ev.ctrlKey || ev.metaKey) && ev.key === 's') {
+    if (mode === 'edit') { saveEdit(); ev.preventDefault(); }
+  } else if ((ev.ctrlKey || ev.metaKey) && ev.key === 'k') {
+    document.getElementById('search').focus(); ev.preventDefault();
   }
 });
 

@@ -99,7 +99,7 @@ mmcc add --type feedback --name "lesson learned" \
 mmcc add --type project --name "context note" \
          --description "background" --project gateway   # Omit --body to open $EDITOR
 
-# Launch local web viewer + CRUD editor for all memory (V2.1 viewer · V2.2 terminal + CRUD)
+# Launch local web viewer + CRUD editor for all memory
 mmcc notepad                                            # Auto-pick port from 8765
 mmcc notepad --port 8080                                # Use a specific port
 mmcc notepad --no-browser                               # Don't auto-open browser
@@ -115,7 +115,7 @@ mmcc notepad --no-browser                               # Don't auto-open browse
 
 `mmcc notepad` opens a local SPA at `http://localhost:8765` (or the next free port from 8766) showing all memory across projects with a type filter and live search. Pure stdlib HTTP server, marked.js loads from CDN. Cross-platform port-conflict detection via `connect_ex` probe — auto-switches to the next free port when 8765 is busy, or raises a clear error if `--port <N>` is explicitly occupied. Memory bodies render as markdown with raw HTML stripped (so any `<script>` inside a body shows as text, never executes).
 
-V2.2 ships a **terminal aesthetic** (black background `#0a0a0a` + amber `#ffb000` + Cascadia Code monospace + ASCII borders) and **CRUD inline**: click `[edit]` to modify name / description / body in place (`Ctrl+S` to save, `Esc` to cancel), or `[delete]` for a `rm <path>? [y/N]` confirm prompt. Deletion is restricted to memory entries (`<project>/memory/*.md`) — non-entry files under the projects tree (e.g. `sessions/*.jsonl`) cannot be deleted via the API. Writes use atomic `tempfile + os.replace` so a mid-write crash never leaves a half-written file on disk.
+The SPA uses an **Inter + JetBrains Mono** light theme with a blue accent (`#2563eb`) and per-type color pills (feedback amber, user green, project blue, reference purple). Top bar: collapsible sidebar toggle, search box with `Ctrl/Cmd+K` shortcut, and a row of type-filter tabs (`all` / `feedback` / `user` / `project` / `reference`). The viewer pane renders a `<project> / memory / <filename>` breadcrumb, the type pill, title, description, and a Notion-style toolbar (`编辑` · `复制路径` · `在 VSCode 打开` · `删除`). **CRUD inline**: edit mode lets you patch name / description / body (`Ctrl/Cmd+S` to save, `Esc` to cancel); delete shows an in-page confirm card before removing the file. Deletion is restricted to memory entries (`<project>/memory/*.md`) — non-entry files under the projects tree (e.g. `sessions/*.jsonl`) cannot be deleted via the API. Writes use atomic `tempfile + os.replace` so a mid-write crash never leaves a half-written file on disk.
 
 ## Output formats
 
