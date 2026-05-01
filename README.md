@@ -69,22 +69,51 @@ cp -r skills/memory-search ~/.claude/skills/
 mmcc tree
 mmcc tree --all                 # Include worktree alias projects
 
-# List memory entries
+# List memory entries (project filter accepts a positional or --project)
 mmcc list
+mmcc list quant                 # Positional substring match
+mmcc list --project quant       # Equivalent --project form
 mmcc list --type feedback
-mmcc list --project quant       # Substring match on project name
 
-# Search across all projects
+# Search across all projects (keyword positional, optional project positional)
 mmcc search "version"
 mmcc search "auth" --type feedback
-mmcc search "redis" --project gateway --case-sensitive
+mmcc search "redis" gateway --case-sensitive          # Positional project filter
+mmcc search "supabase auth" --all-words               # AND across whitespace-split words
+mmcc search "athentication" --fuzzy                   # difflib typo tolerance (cutoff 0.7)
 
 # Inspect a single memory (ref = <project_short>:<filename>)
-mmcc cat AI-related-claude-repath:feedback_version_bump_checklist.md
-mmcc cat feedback_version_bump_checklist.md      # Bare filename if unique
-mmcc which <ref>                                  # Print absolute path
-mmcc edit <ref>                                   # Open in $EDITOR / VISUAL
+mmcc cat claude-repath:feedback_version_bump_checklist.md
+mmcc cat feedback_version_bump_checklist.md           # Bare filename if unique
+mmcc which <ref>                                      # Print absolute path
+
+# Edit: open in editor by default, or patch frontmatter inline (skips editor)
+mmcc edit <ref>
+mmcc edit <ref> --description "new description"
+mmcc edit <ref> --name "new name" --type feedback
+
+# Add a new memory entry (writes ~/.claude/projects/<id>/memory/<type>_<slug>.md)
+mmcc add --type feedback --name "lesson learned" \
+         --description "short summary" --body "full body text" \
+         --project mmcc                                # --project defaults to cwd
+mmcc add --type project --name "context note" \
+         --description "background" --project gateway   # Omit --body to open $EDITOR
+
+# Launch local web viewer for all memory across projects (V2.1)
+mmcc notepad                                            # Auto-pick port from 8765
+mmcc notepad --port 8080                                # Use a specific port
+mmcc notepad --no-browser                               # Don't auto-open browser
 ```
+
+`mmcc tree` shows project short ids with both the global prefix (e.g. `D--dev-code-`) and a category prefix (e.g. `AI-related-`, `Tools-`) stripped when at least two projects share that category — so `D--dev-code-AI-related-CCometixLine` displays as `CCometixLine`. The full project id is still accepted by every filter.
+
+`mmcc search` flags `--all-words` and `--fuzzy` are mutually exclusive. Default search is a single literal substring across name + description + body; pass `--body` / `--title` / `--description` to scope further.
+
+`mmcc add` requires `--type` and `--name`. The body comes from `--body` if given, otherwise `$EDITOR` / `$VISUAL` (`code` / `notepad` as fallback) opens a temporary file. The slug for the filename is derived from `--name` (lowercase, spaces and hyphens to underscores, non-word chars stripped). Existing files are never overwritten — `mmcc add` exits with code 1 and `EntryExistsError`.
+
+`mmcc edit <ref> --name/--description/--type` patches frontmatter in place without opening the editor; unknown frontmatter keys are preserved. Pass no flags to fall back to `$EDITOR`.
+
+`mmcc notepad` opens a local SPA at `http://localhost:8765` (or the next free port from 8766) showing all memory across projects with a type filter and live search. Pure stdlib HTTP server, marked.js loads from CDN. Cross-platform port-conflict detection via `connect_ex` probe — auto-switches to the next free port when 8765 is busy, or raises a clear error if `--port <N>` is explicitly occupied. Memory bodies render as markdown with raw HTML stripped (so any `<script>` inside a body shows as text, never executes).
 
 ## Output formats
 

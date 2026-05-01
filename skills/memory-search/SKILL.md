@@ -48,15 +48,28 @@ User wants overview of all projects with memory?
   → mmcc tree
 
 User wants list of memories (filter optional)?
-  → mmcc list [--project X] [--type feedback]
+  → mmcc list [<project>] [--type feedback]
+    (positional and --project are equivalent and mutually exclusive)
 
 User searching for a keyword?
-  → mmcc search "<keyword>" [--type feedback]
+  → mmcc search "<keyword>" [<project>] [--type feedback]
+  → Multi-word AND match:    mmcc search "<w1> <w2>" --all-words
+  → Typo-tolerant:            mmcc search "<typo>" --fuzzy
 
 User wants to read a specific memory?
   → mmcc cat <ref>          (full content)
   → mmcc which <ref>        (just the path, for piping)
   → mmcc edit <ref>         (open in $EDITOR)
+
+User explicitly asks to update an existing memory's frontmatter?
+  → mmcc edit <ref> --description "..." [--name "..."] [--type feedback]
+
+User explicitly asks to create a new memory in a specific project?
+  → mmcc add --type <t> --name "..." --description "..." \
+             [--project <substring>] [--body "..."]
+  → Note: Claude's built-in memory tools handle automatic memory writes.
+    Only invoke `mmcc add` when the user explicitly asks ("add a feedback
+    to project X", "save this as a memory in Y").
 ```
 
 ## Standard workflow
@@ -70,7 +83,7 @@ User wants to read a specific memory?
    mmcc search "<keyword>" --type feedback
    ```
 3. Output uses `<project_short>:<filename>` as the ref — copy that into `mmcc cat` to read full content.
-4. Too many hits? Add `--type` or `--project <substring>` to narrow.
+4. Too many hits? Add `--type` or `--project <substring>` (or the bare positional project) to narrow. Try `--all-words` if multi-word matches feel too narrow, `--fuzzy` if you suspect a typo.
 
 ## Output format
 
@@ -108,6 +121,6 @@ Windows + Git Bash users: the installed `mmcc` entry point auto-reconfigures std
 
 ## Do NOT use this skill for
 
-- Writing new memories — Claude Code does this automatically via its built-in memory tools
-- Editing global `~/.claude/CLAUDE.md` — use the `Edit` tool directly
-- Reading memories inside the current project's session — Claude already auto-loads them at session start
+- Automatic memory writes — Claude Code's built-in memory tools handle the routine "save this as a feedback" flow during a session. Only invoke `mmcc add` when the user explicitly asks to create a memory in a *different project* than the current session (or in a project they name explicitly).
+- Editing global `~/.claude/CLAUDE.md` — use the `Edit` tool directly.
+- Reading memories inside the current project's session — Claude already auto-loads them at session start.
