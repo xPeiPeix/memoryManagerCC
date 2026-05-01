@@ -12,6 +12,9 @@ Claude Code v2.1.59+ stores per-project auto memory under `~/.claude/projects/<e
 
 `mmcc` reads those `.md` files directly. **No index, no MCP server, no daemon — just file reads.**
 
+## Screenshot
+![alt text](image-1.png)
+
 ## Demo
 
 ```
