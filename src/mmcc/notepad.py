@@ -13,9 +13,22 @@ from typing import Optional
 from .store import MemoryStore
 
 
+def _port_in_use(host: str, port: int) -> bool:
+    # Windows 默认允许多个 socket bind 同一个 LISTEN 端口（Linux 不允许），
+    # 只 bind 探测会假阴性。必须 connect_ex 主动握手才能发现已有 listener。
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.1)
+        try:
+            return s.connect_ex((host, port)) == 0
+        except OSError:
+            return False
+
+
 def _find_free_port(host: str = "localhost", preferred: int = 8765) -> int:
     candidates = [preferred] + [p for p in range(8766, 8800) if p != preferred]
     for port in candidates:
+        if _port_in_use(host, port):
+            continue
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind((host, port))
@@ -25,6 +38,16 @@ def _find_free_port(host: str = "localhost", preferred: int = 8765) -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind((host, 0))
         return s.getsockname()[1]
+
+
+def _resolve_listen_port(host: str, port: Optional[int]) -> int:
+    if port is None:
+        return _find_free_port(host)
+    if _port_in_use(host, port):
+        raise OSError(
+            f"Port {port} on {host} is already in use by another process"
+        )
+    return port
 
 
 def _safe_resolve(file_path: str, root: Path) -> Optional[Path]:
@@ -144,8 +167,7 @@ def start_server(store: MemoryStore,
                  host: str = "localhost",
                  port: Optional[int] = None,
                  open_browser: bool = True) -> None:
-    if port is None:
-        port = _find_free_port(host)
+    port = _resolve_listen_port(host, port)
     handler_cls = make_handler(store, store.projects_dir)
     httpd = _ThreadedServer((host, port), handler_cls)
     url = f"http://{host}:{port}"
