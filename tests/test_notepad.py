@@ -152,3 +152,25 @@ def test_404_for_unknown_path(server):
     with pytest.raises(HTTPError) as exc_info:
         urlopen(f"http://localhost:{port}/nope")
     assert exc_info.value.code == 404
+
+
+def test_spa_disables_marked_raw_html(server):
+    """SPA must configure marked to strip raw HTML tokens.
+
+    Memory bodies may legitimately contain raw HTML (e.g. a feedback note
+    discussing XSS attack vectors that pastes a `<script>` example).
+    Without this guard the example would actually execute when the user
+    opens the entry — a real UX hazard, not just a theoretical attack.
+
+    This test enforces the SPA includes a marked.use(...) renderer config
+    that neutralizes the html token. We do not validate runtime JS
+    behaviour here (no headless browser in CI); the string-level guard is
+    a regression tripwire — if someone removes the config the test fails.
+    """
+    _, port = server
+    with urlopen(f"http://localhost:{port}/") as r:
+        html = r.read().decode("utf-8")
+    assert "marked.use" in html, \
+        "SPA must call marked.use({renderer: {...}}) to disable raw HTML"
+    assert "renderer" in html and "html" in html, \
+        "marked.use must override renderer.html to strip raw HTML"

@@ -235,6 +235,9 @@ _INDEX_HTML = r"""<!DOCTYPE html>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script>
+// 防 XSS：strip raw HTML token，避免 memory 里贴的 <script> 等代码示例被意外执行
+marked.use({ renderer: { html(token) { return ''; } } });
+
 let projects = [];
 let selected = null;
 
