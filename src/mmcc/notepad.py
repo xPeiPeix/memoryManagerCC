@@ -122,6 +122,77 @@ def make_handler(store: MemoryStore, projects_root: Path):
             else:
                 self._serve_json({"error": "not found"}, 404)
 
+        def do_PUT(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path != "/api/entry":
+                self._serve_json({"error": "not found"}, 404)
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                self._serve_json({"error": "malformed JSON body"}, 400)
+                return
+            target = self._resolve_or_error(payload.get("path"))
+            if target is None:
+                return
+            if not target.exists():
+                self._serve_json({"error": "not found"}, 404)
+                return
+            try:
+                entry = store.update_entry(
+                    target,
+                    name=payload.get("name"),
+                    description=payload.get("description"),
+                    type=payload.get("type"),
+                    body=payload.get("body"),
+                )
+            except (ValueError, OSError) as e:
+                self._serve_json({"error": str(e)}, 400)
+                return
+            self._serve_json(_entry_payload(store, entry.file_path) or {"ok": True})
+
+        def do_DELETE(self) -> None:
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path != "/api/entry":
+                self._serve_json({"error": "not found"}, 404)
+                return
+            payload = self._read_json_body()
+            if payload is None:
+                self._serve_json({"error": "malformed JSON body"}, 400)
+                return
+            target = self._resolve_or_error(payload.get("path"))
+            if target is None:
+                return
+            try:
+                store.delete_entry(target)
+            except FileNotFoundError:
+                self._serve_json({"error": "not found"}, 404)
+                return
+            except OSError as e:
+                self._serve_json({"error": str(e)}, 400)
+                return
+            self._serve_json({"ok": True, "deleted": str(target)})
+
+        def _read_json_body(self) -> Optional[dict]:
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length <= 0:
+                return None
+            try:
+                raw = self.rfile.read(length)
+                payload = json.loads(raw.decode("utf-8"))
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError):
+                return None
+            return payload if isinstance(payload, dict) else None
+
+        def _resolve_or_error(self, file_path: Optional[str]) -> Optional[Path]:
+            if not file_path or not isinstance(file_path, str):
+                self._serve_json({"error": "missing path"}, 400)
+                return None
+            target = _safe_resolve(file_path, projects_root)
+            if target is None:
+                self._serve_json({"error": "forbidden: path outside projects root"}, 403)
+                return None
+            return target
+
         def _handle_entry(self, file_path: str) -> None:
             if not file_path:
                 self._serve_json({"error": "missing path"}, 400)
@@ -195,73 +266,126 @@ _INDEX_HTML = r"""<!DOCTYPE html>
 
 <style>
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; height: 100%; font-family: ui-sans-serif, system-ui, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
-  body { display: flex; flex-direction: column; height: 100vh; color: #222; }
-  header { background: #1f2937; color: #f9fafb; padding: 10px 16px; display: flex; gap: 10px; align-items: center; flex-shrink: 0; }
-  header strong { font-size: 15px; }
-  header input, header select { padding: 6px 10px; border: 1px solid #374151; background: #111827; color: #f9fafb; border-radius: 4px; font-size: 13px; }
+  :root {
+    --bg: #0a0a0a;
+    --bg-dim: #141414;
+    --bg-hi: #1d1d1d;
+    --fg: #ffb000;
+    --fg-dim: #b07700;
+    --fg-mute: #666;
+    --accent: #00ff66;
+    --danger: #ff4040;
+  }
+  html, body { margin: 0; padding: 0; height: 100%;
+    font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+    font-size: 13px; line-height: 1.5; }
+  body { display: flex; flex-direction: column; height: 100vh;
+    background: var(--bg); color: var(--fg); }
+  header { background: var(--bg); color: var(--fg); padding: 8px 14px;
+    display: flex; gap: 12px; align-items: center; flex-shrink: 0;
+    border-bottom: 1px solid var(--fg-dim); }
+  header .prompt { color: var(--accent); white-space: nowrap; }
+  header .cursor { animation: blink 1s steps(2) infinite;
+    display: inline-block; width: 8px; background: var(--fg); }
+  @keyframes blink { 50% { opacity: 0; } }
+  header input, header select { padding: 4px 8px;
+    background: var(--bg-dim); color: var(--fg); border: 1px solid var(--fg-dim);
+    font-family: inherit; font-size: inherit; }
+  header input:focus, header select:focus { outline: none; border-color: var(--fg); }
   header input { flex: 1; min-width: 200px; }
-  header .stat { font-size: 12px; color: #9ca3af; }
+  header .stat { font-size: 12px; color: var(--fg-mute); white-space: nowrap; }
   #app { flex: 1; display: flex; min-height: 0; overflow: hidden; }
-  aside { width: 340px; flex-shrink: 0; overflow-y: auto; border-right: 1px solid #e5e7eb; background: #f9fafb; }
-  aside .project { font-weight: 600; padding: 9px 14px; background: #e5e7eb; border-bottom: 1px solid #d1d5db; font-size: 13px; cursor: pointer; user-select: none; }
-  aside .project .count { color: #6b7280; font-weight: normal; font-size: 11px; margin-left: 6px; }
+  aside { width: 360px; flex-shrink: 0; overflow-y: auto;
+    background: var(--bg); border-right: 1px solid var(--fg-dim); }
+  aside .project { padding: 6px 12px; background: var(--bg-dim);
+    border-bottom: 1px solid var(--fg-dim); cursor: pointer; user-select: none;
+    color: var(--fg); }
+  aside .project::before { content: '> '; color: var(--accent); }
+  aside .project.collapsed::before { content: 'v '; }
+  aside .project .count { color: var(--fg-mute); margin-left: 6px; }
   aside .project.collapsed + .entries { display: none; }
-  aside .entries { padding: 2px 0; }
-  aside .entry { padding: 6px 14px 6px 28px; cursor: pointer; font-size: 13px; border-left: 3px solid transparent; }
-  aside .entry:hover { background: #e0e7ff; }
-  aside .entry.selected { background: #c7d2fe; border-left-color: #4f46e5; }
-  .badge { display: inline-block; font-size: 10px; padding: 1px 6px; border-radius: 3px; margin-right: 6px; color: #fff; vertical-align: 1px; }
-  .badge-feedback { background: #dc2626; }
-  .badge-user { background: #0284c7; }
-  .badge-project { background: #16a34a; }
-  .badge-reference { background: #d97706; }
-  .badge-unknown { background: #6b7280; }
-  main { flex: 1; padding: 28px 36px; overflow-y: auto; background: #fff; }
-  main h1 { margin: 0 0 6px; font-size: 22px; }
-  main .meta { color: #6b7280; font-size: 13px; margin-bottom: 18px; }
-  main .meta code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 12px; }
-  main .meta button { margin-right: 6px; padding: 4px 10px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; border-radius: 4px; font-size: 12px; }
-  main .meta button:hover { background: #f3f4f6; }
-  main .meta .description { display: block; margin: 8px 0; padding: 8px 12px; background: #fffbeb; border-left: 3px solid #f59e0b; color: #444; }
-  main .body { line-height: 1.75; font-size: 14px; }
-  main .body h1 { font-size: 20px; margin-top: 22px; }
-  main .body h2 { font-size: 17px; margin-top: 18px; }
-  main .body h3 { font-size: 15px; margin-top: 14px; }
-  main .body pre { background: #1e293b; color: #e2e8f0; padding: 12px; border-radius: 6px; overflow-x: auto; }
-  main .body :not(pre) > code { background: #f3f4f6; padding: 1px 5px; border-radius: 3px; font-size: 13px; color: #c026d3; }
+  aside .entries { padding: 0; }
+  aside .entry { padding: 4px 12px 4px 24px; cursor: pointer;
+    border-left: 2px solid transparent; color: var(--fg-dim); }
+  aside .entry:hover { background: var(--bg-dim); color: var(--fg); }
+  aside .entry.selected { background: var(--fg); color: var(--bg);
+    border-left-color: var(--accent); }
+  .badge { display: inline-block; margin-right: 6px;
+    color: var(--fg); border: 1px solid var(--fg-dim); padding: 0 4px; }
+  .entry.selected .badge { color: var(--bg); border-color: var(--bg); }
+  main { flex: 1; padding: 16px 24px; overflow-y: auto; background: var(--bg); }
+  main h1 { margin: 0 0 4px; font-size: 18px; color: var(--fg);
+    border-bottom: 1px dashed var(--fg-dim); padding-bottom: 4px; }
+  main .meta { color: var(--fg-mute); margin-bottom: 14px; font-size: 12px; }
+  main .meta .row { margin: 4px 0; }
+  main .meta .description { display: block; margin: 6px 0; padding: 4px 8px;
+    border-left: 2px solid var(--accent); color: var(--fg); }
+  main .toolbar { margin: 8px 0; display: flex; gap: 6px; flex-wrap: wrap; }
+  main button, main .toolbar a { background: var(--bg); color: var(--fg);
+    border: 1px solid var(--fg-dim); padding: 3px 10px; cursor: pointer;
+    font-family: inherit; font-size: inherit; text-decoration: none; }
+  main button:hover, main .toolbar a:hover { background: var(--fg); color: var(--bg); }
+  main button.danger { color: var(--danger); border-color: var(--danger); }
+  main button.danger:hover { background: var(--danger); color: var(--bg); }
+  main .body { font-size: 13px; color: var(--fg); line-height: 1.7; }
+  main .body h1, main .body h2, main .body h3 { color: var(--fg);
+    border-bottom: 1px dashed var(--fg-dim); padding-bottom: 2px; }
+  main .body h1 { font-size: 16px; margin-top: 18px; }
+  main .body h2 { font-size: 14px; margin-top: 14px; }
+  main .body h3 { font-size: 13px; margin-top: 12px; }
+  main .body pre { background: var(--bg-dim); color: var(--fg);
+    border: 1px dashed var(--fg-dim); padding: 8px; overflow-x: auto; }
+  main .body :not(pre) > code { background: var(--bg-dim); color: var(--accent);
+    padding: 0 4px; border: 1px dashed var(--fg-dim); }
   main .body table { border-collapse: collapse; }
-  main .body th, main .body td { padding: 6px 10px; border: 1px solid #e5e7eb; }
-  main .body th { background: #f9fafb; }
-  main .body blockquote { border-left: 3px solid #d1d5db; padding-left: 12px; color: #6b7280; margin-left: 0; }
-  .empty { color: #9ca3af; text-align: center; margin-top: 80px; font-size: 14px; }
+  main .body th, main .body td { padding: 4px 8px;
+    border: 1px solid var(--fg-dim); }
+  main .body blockquote { border-left: 2px solid var(--fg-dim);
+    padding-left: 10px; color: var(--fg-mute); margin-left: 0; }
+  main .body a { color: var(--accent); }
+  main .editor { display: flex; flex-direction: column; gap: 8px; }
+  main .editor label { color: var(--fg-mute); font-size: 12px; }
+  main .editor input, main .editor textarea { background: var(--bg-dim);
+    color: var(--fg); border: 1px solid var(--fg-dim); padding: 4px 8px;
+    font-family: inherit; font-size: inherit; }
+  main .editor input:focus, main .editor textarea:focus {
+    outline: none; border-color: var(--fg); }
+  main .editor textarea { min-height: 360px; resize: vertical; line-height: 1.5; }
+  main .confirm { padding: 12px; border: 1px solid var(--danger);
+    background: var(--bg-dim); color: var(--danger); }
+  main .confirm .cursor { animation: blink 1s steps(2) infinite;
+    display: inline-block; width: 8px; background: var(--danger); }
+  .empty { color: var(--fg-mute); text-align: center; margin-top: 80px; }
 </style>
 </head>
 <body>
 <header>
-  <strong>mmcc notepad</strong>
-  <input id="search" placeholder="搜索 name / description / 文件名..." />
+  <span class="prompt">mmcc@notepad:~$</span><span class="cursor">&nbsp;</span>
+  <input id="search" placeholder="grep memory..." />
   <select id="type-filter">
-    <option value="">所有类型</option>
-    <option value="feedback">feedback</option>
-    <option value="user">user</option>
-    <option value="project">project</option>
-    <option value="reference">reference</option>
-    <option value="unknown">unknown</option>
+    <option value="">[all types]</option>
+    <option value="feedback">[F] feedback</option>
+    <option value="user">[U] user</option>
+    <option value="project">[P] project</option>
+    <option value="reference">[R] reference</option>
+    <option value="unknown">[?] unknown</option>
   </select>
   <span class="stat" id="stat"></span>
 </header>
 <div id="app">
   <aside id="tree"></aside>
-  <main id="viewer"><div class="empty">从左侧选择一条 memory</div></main>
+  <main id="viewer"><div class="empty">// select a memory entry from the left tree</div></main>
 </div>
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script>
-// 防 XSS：strip raw HTML token，避免 memory 里贴的 <script> 等代码示例被意外执行
+// PR #3 XSS guard: strip raw HTML token so memory bodies can't execute pasted <script>
 marked.use({ renderer: { html(token) { return ''; } } });
+
+const TYPE_GLYPH = { feedback: 'F', user: 'U', project: 'P', reference: 'R', unknown: '?' };
 
 let projects = [];
 let selected = null;
+let mode = 'view';  // 'view' | 'edit' | 'confirm-delete'
 
 async function loadProjects() {
   try {
@@ -270,7 +394,7 @@ async function loadProjects() {
     projects = data.projects || [];
     renderTree();
   } catch (e) {
-    document.getElementById('tree').innerHTML = '<div class="empty">加载失败：' + e.message + '</div>';
+    document.getElementById('tree').innerHTML = '<div class="empty">// load failed: ' + e.message + '</div>';
   }
 }
 
@@ -291,7 +415,7 @@ function renderTree() {
     totalShown += matched.length;
     const projDiv = document.createElement('div');
     projDiv.className = 'project';
-    projDiv.innerHTML = escapeHTML(p.short_id) + '<span class="count">' + matched.length + '</span>';
+    projDiv.innerHTML = escapeHTML(p.short_id) + '<span class="count">(' + matched.length + ')</span>';
     projDiv.onclick = () => projDiv.classList.toggle('collapsed');
     tree.appendChild(projDiv);
     const entriesDiv = document.createElement('div');
@@ -300,16 +424,23 @@ function renderTree() {
       const entryDiv = document.createElement('div');
       entryDiv.className = 'entry';
       entryDiv.dataset.path = e.file_path;
-      entryDiv.innerHTML = '<span class="badge badge-' + escapeHTML(e.type) + '">' + escapeHTML(e.type) + '</span>' + escapeHTML(e.name);
+      const glyph = TYPE_GLYPH[e.type] || '?';
+      entryDiv.innerHTML = '<span class="badge">' + glyph + '</span>' + escapeHTML(e.name);
       entryDiv.title = e.description || e.filename;
       entryDiv.onclick = () => selectEntry(e.file_path);
       entriesDiv.appendChild(entryDiv);
     }
     tree.appendChild(entriesDiv);
   }
-  document.getElementById('stat').textContent = totalShown + ' 条 / ' + projects.length + ' 项目';
+  document.getElementById('stat').textContent = totalShown + ' entries / ' + projects.length + ' projects';
   if (totalShown === 0) {
-    tree.innerHTML = '<div class="empty">无匹配结果</div>';
+    tree.innerHTML = '<div class="empty">// no matches</div>';
+  }
+  // re-highlight selected after re-render
+  if (selected) {
+    document.querySelectorAll('.entry').forEach(el => {
+      el.classList.toggle('selected', el.dataset.path === selected.file_path);
+    });
   }
 }
 
@@ -320,38 +451,153 @@ async function selectEntry(filePath) {
   try {
     const r = await fetch('/api/entry?path=' + encodeURIComponent(filePath));
     if (!r.ok) {
-      document.getElementById('viewer').innerHTML = '<div class="empty">加载失败 ' + r.status + '</div>';
+      document.getElementById('viewer').innerHTML = '<div class="empty">// load failed: ' + r.status + '</div>';
       return;
     }
     const e = await r.json();
     selected = e;
-    renderEntry(e);
+    mode = 'view';
+    renderEntry();
   } catch (err) {
-    document.getElementById('viewer').innerHTML = '<div class="empty">网络错误：' + err.message + '</div>';
+    document.getElementById('viewer').innerHTML = '<div class="empty">// network error: ' + err.message + '</div>';
   }
 }
 
-function renderEntry(e) {
+function renderEntry() {
   const v = document.getElementById('viewer');
   v.innerHTML = '';
-  const h1 = document.createElement('h1'); h1.textContent = e.name; v.appendChild(h1);
+  if (!selected) { v.innerHTML = '<div class="empty">// no entry selected</div>'; return; }
+
+  const e = selected;
+  const h1 = document.createElement('h1');
+  h1.textContent = '[' + (TYPE_GLYPH[e.type] || '?') + '] ' + e.name;
+  v.appendChild(h1);
+
   const meta = document.createElement('div'); meta.className = 'meta';
   meta.innerHTML =
-    '<span class="badge badge-' + escapeHTML(e.type) + '">' + escapeHTML(e.type) + '</span> · ' +
-    '<span>' + escapeHTML(e.project_path) + '</span> · ' +
-    '<code>' + escapeHTML(e.filename) + '</code>';
+    '<div class="row">project: ' + escapeHTML(e.project_path) + '</div>' +
+    '<div class="row">file: ' + escapeHTML(e.filename) + '</div>' +
+    '<div class="row">type: ' + escapeHTML(e.type) + '</div>';
   if (e.description) {
-    const d = document.createElement('span'); d.className = 'description'; d.textContent = e.description; meta.appendChild(d);
+    const d = document.createElement('span'); d.className = 'description';
+    d.textContent = '// ' + e.description; meta.appendChild(d);
   }
-  const btnCopy = document.createElement('button'); btnCopy.textContent = '复制路径'; btnCopy.onclick = copyPath;
-  const btnVS = document.createElement('button'); btnVS.textContent = '在 VSCode 打开'; btnVS.onclick = openInVSCode;
-  meta.appendChild(document.createElement('br'));
-  meta.appendChild(btnCopy);
-  meta.appendChild(btnVS);
   v.appendChild(meta);
+
+  if (mode === 'view') { renderViewMode(v, e); }
+  else if (mode === 'edit') { renderEditMode(v, e); }
+  else if (mode === 'confirm-delete') { renderConfirmDelete(v, e); }
+}
+
+function renderViewMode(v, e) {
+  const toolbar = document.createElement('div'); toolbar.className = 'toolbar';
+  const btnEdit = document.createElement('button'); btnEdit.textContent = '[edit]';
+  btnEdit.onclick = () => { mode = 'edit'; renderEntry(); };
+  const btnDel = document.createElement('button'); btnDel.textContent = '[delete]';
+  btnDel.className = 'danger';
+  btnDel.onclick = () => { mode = 'confirm-delete'; renderEntry(); };
+  const btnCopy = document.createElement('button'); btnCopy.textContent = '[copy path]';
+  btnCopy.onclick = copyPath;
+  const btnVS = document.createElement('a'); btnVS.textContent = '[open in vscode]';
+  btnVS.href = 'vscode://file/' + e.file_path.replace(/\\/g, '/');
+  toolbar.appendChild(btnEdit); toolbar.appendChild(btnDel);
+  toolbar.appendChild(btnCopy); toolbar.appendChild(btnVS);
+  v.appendChild(toolbar);
+
   const body = document.createElement('div'); body.className = 'body';
   body.innerHTML = marked.parse(e.body || '');
   v.appendChild(body);
+}
+
+function renderEditMode(v, e) {
+  const editor = document.createElement('div'); editor.className = 'editor';
+
+  const lblName = document.createElement('label'); lblName.textContent = 'name:';
+  const inpName = document.createElement('input'); inpName.id = 'inp-name'; inpName.value = e.name;
+  const lblDesc = document.createElement('label'); lblDesc.textContent = 'description:';
+  const inpDesc = document.createElement('input'); inpDesc.id = 'inp-desc'; inpDesc.value = e.description || '';
+  const lblBody = document.createElement('label'); lblBody.textContent = 'body (markdown):';
+  const inpBody = document.createElement('textarea'); inpBody.id = 'inp-body'; inpBody.value = e.body || '';
+
+  editor.appendChild(lblName); editor.appendChild(inpName);
+  editor.appendChild(lblDesc); editor.appendChild(inpDesc);
+  editor.appendChild(lblBody); editor.appendChild(inpBody);
+
+  const toolbar = document.createElement('div'); toolbar.className = 'toolbar';
+  const btnSave = document.createElement('button'); btnSave.textContent = '[save] (Ctrl+S)';
+  btnSave.onclick = saveEdit;
+  const btnCancel = document.createElement('button'); btnCancel.textContent = '[cancel] (Esc)';
+  btnCancel.onclick = () => { mode = 'view'; renderEntry(); };
+  toolbar.appendChild(btnSave); toolbar.appendChild(btnCancel);
+  editor.appendChild(toolbar);
+
+  v.appendChild(editor);
+  setTimeout(() => inpName.focus(), 0);
+}
+
+function renderConfirmDelete(v, e) {
+  const c = document.createElement('div'); c.className = 'confirm';
+  c.innerHTML = 'rm ' + escapeHTML(e.file_path) + '? [y/N]<span class="cursor">&nbsp;</span>';
+  v.appendChild(c);
+  const toolbar = document.createElement('div'); toolbar.className = 'toolbar';
+  const btnYes = document.createElement('button'); btnYes.textContent = '[y] yes, delete';
+  btnYes.className = 'danger'; btnYes.onclick = confirmDelete;
+  const btnNo = document.createElement('button'); btnNo.textContent = '[n] cancel';
+  btnNo.onclick = () => { mode = 'view'; renderEntry(); };
+  toolbar.appendChild(btnYes); toolbar.appendChild(btnNo);
+  v.appendChild(toolbar);
+}
+
+async function saveEdit() {
+  if (!selected) return;
+  const payload = {
+    path: selected.file_path,
+    name: document.getElementById('inp-name').value,
+    description: document.getElementById('inp-desc').value,
+    body: document.getElementById('inp-body').value,
+  };
+  try {
+    const r = await fetch('/api/entry', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert('save failed: ' + r.status + ' ' + (err.error || ''));
+      return;
+    }
+    const updated = await r.json();
+    selected = updated;
+    mode = 'view';
+    renderEntry();
+    loadProjects();
+  } catch (err) {
+    alert('network error: ' + err.message);
+  }
+}
+
+async function confirmDelete() {
+  if (!selected) return;
+  const payload = { path: selected.file_path };
+  try {
+    const r = await fetch('/api/entry', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      alert('delete failed: ' + r.status + ' ' + (err.error || ''));
+      return;
+    }
+    selected = null;
+    mode = 'view';
+    document.getElementById('viewer').innerHTML = '<div class="empty">// entry deleted</div>';
+    loadProjects();
+  } catch (err) {
+    alert('network error: ' + err.message);
+  }
 }
 
 function escapeHTML(s) {
@@ -363,19 +609,33 @@ function escapeHTML(s) {
 function copyPath() {
   if (!selected) return;
   navigator.clipboard.writeText(selected.file_path).then(
-    () => alert('已复制：' + selected.file_path),
-    () => alert('复制失败，请手动选择')
+    () => { /* silent */ },
+    () => alert('copy failed: select manually')
   );
-}
-
-function openInVSCode() {
-  if (!selected) return;
-  const fp = selected.file_path.replace(/\\/g, '/');
-  window.location.href = 'vscode://file/' + fp;
 }
 
 document.getElementById('search').addEventListener('input', renderTree);
 document.getElementById('type-filter').addEventListener('change', renderTree);
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape') {
+    if (mode === 'edit' || mode === 'confirm-delete') {
+      mode = 'view';
+      renderEntry();
+      ev.preventDefault();
+    }
+  } else if (ev.ctrlKey && ev.key === 's') {
+    if (mode === 'edit') {
+      saveEdit();
+      ev.preventDefault();
+    }
+  } else if (mode === 'confirm-delete') {
+    if (ev.key === 'y' || ev.key === 'Y') { confirmDelete(); ev.preventDefault(); }
+    else if (ev.key === 'n' || ev.key === 'N') {
+      mode = 'view'; renderEntry(); ev.preventDefault();
+    }
+  }
+});
 
 loadProjects();
 </script>
