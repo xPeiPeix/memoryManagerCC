@@ -681,16 +681,27 @@ function renderViewMode(wrap, e) {
 }
 
 function renderEditMode(wrap, e) {
+  // wrap 在 renderEntry 末尾才 appendChild 到 viewer, 这里仍是 detached node;
+  // 用闭包变量赋 value, 不要走 document.getElementById (会返回 null)
   const editor = document.createElement('div');
   editor.className = 'editor';
-  editor.innerHTML =
-    '<label>name</label><input id="inp-name" />' +
-    '<label>description</label><input id="inp-desc" />' +
-    '<label>body (markdown)</label><textarea id="inp-body"></textarea>';
+
+  const lblName = document.createElement('label'); lblName.textContent = 'name';
+  const inpName = document.createElement('input');
+  inpName.id = 'inp-name'; inpName.value = e.name || '';
+
+  const lblDesc = document.createElement('label'); lblDesc.textContent = 'description';
+  const inpDesc = document.createElement('input');
+  inpDesc.id = 'inp-desc'; inpDesc.value = e.description || '';
+
+  const lblBody = document.createElement('label'); lblBody.textContent = 'body (markdown)';
+  const inpBody = document.createElement('textarea');
+  inpBody.id = 'inp-body'; inpBody.value = e.body || '';
+
+  editor.appendChild(lblName); editor.appendChild(inpName);
+  editor.appendChild(lblDesc); editor.appendChild(inpDesc);
+  editor.appendChild(lblBody); editor.appendChild(inpBody);
   wrap.appendChild(editor);
-  document.getElementById('inp-name').value = e.name || '';
-  document.getElementById('inp-desc').value = e.description || '';
-  document.getElementById('inp-body').value = e.body || '';
 
   const tb = document.createElement('div');
   tb.className = 'toolbar';
@@ -704,7 +715,7 @@ function renderEditMode(wrap, e) {
   tb.appendChild(save); tb.appendChild(cancel);
   wrap.appendChild(tb);
 
-  setTimeout(() => document.getElementById('inp-name').focus(), 0);
+  setTimeout(() => inpName.focus(), 0);
 }
 
 function renderConfirmDelete(wrap, e) {
