@@ -32,6 +32,19 @@ Shipped via PRs #2 / #3 / #4. Adds an experimental `mmcc notepad` subcommand —
 
 `MemoryStore` reused unchanged — `notepad.py` is a thin HTTP wrapper. Architecture invariant holds.
 
+## V2.3 — Released (Index panel + design refresh + clickable internal navigation)
+
+Shipped via PR #6 (light redesign), PR #7 (edit-mode blank fix), PR #8 (refresh button + MEMORY.md index panel).
+
+- **Light SPA redesign (PR #6)** — replaces V2.2 terminal aesthetic with an Inter + JetBrains Mono light theme: blue accent (`#2563eb`), per-type color pills (feedback amber / user green / project blue / reference purple), Notion-style breadcrumb + toolbar, type-filter tabs, `Ctrl/Cmd+K` search shortcut.
+- **Edit-mode blank fix (PR #7)** — `renderEditMode` accessed inputs via `document.getElementById` while `wrap` was still a detached node, returning `null` and rendering empty fields. Switched to closure-local refs assigned at element creation time.
+- **Refresh button + edit-mode protection** — header `↻` re-pulls the project tree; in edit / confirm-delete modes the viewer is preserved (refresh only re-fetches the entry when `mode === 'view'`) so unsaved input never gets dropped.
+- **MEMORY.md index panel + full CRUD** — each project's `MEMORY.md` index file is now a first-class "index entry" alongside regular memory entries. Sidebar shows a `📋 索引 (MEMORY.md)` row at the top of each project group (teal `--type-index: #0891b2`), distinct from the four entry types. View renders markdown; edit shows a single textarea (no name/description/type fields, since indices have no frontmatter); delete confirms with a stronger warning. Three new `MemoryStore` methods (`read_index` / `write_index` / `delete_index`) keep the architecture invariant — `MemoryEntry` dataclass and `VALID_TYPES` are unchanged. Three new HTTP routes (`GET/PUT/DELETE /api/index`) take `project_id` instead of an absolute path, narrowing the path-traversal attack surface.
+- **Clickable internal navigation** — clicking `[Title](filename.md)` style links inside a rendered MEMORY.md jumps directly to the corresponding entry's view in the SPA (no browser navigation). Self-references (`[self](MEMORY.md)`) refresh the current index. External `http(s)://` links open in a new tab via `target="_blank" rel="noopener"`. `javascript:` / `data:` URLs are rejected client-side as defense in depth on top of the marked.js raw-HTML strip.
+- **`list_projects` filter gate fix** — projects with only `MEMORY.md` and no entries previously got silently filtered out by `entry_count == 0`. Gate is now `entry_count == 0 and not has_index`. `_build_project_info` also includes MEMORY.md mtime in `latest_mtime` so editing only the index updates project sort order.
+
+`MemoryStore` API surface grew (three new methods), but architecture invariant still holds — `MemoryEntry` unchanged, `VALID_TYPES` unchanged, CLI / Skill / future MCP layers unaffected.
+
 ## V2.2 — Released (Terminal aesthetic + memory CRUD)
 
 Shipped via PR #5. Promotes `mmcc notepad` from a read-only viewer to a full editor with terminal-style UI.

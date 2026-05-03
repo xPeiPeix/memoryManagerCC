@@ -1,6 +1,6 @@
 [project]
 name = "mmcc"
-version = "0.1.0"
+version = "0.2.0"
 description = "Browse and search Claude Code auto memory across projects"
 requires-python = ">=3.11"
 dependencies = []
