@@ -171,7 +171,7 @@ class MemoryStore:
             info = self._build_project_info(proj_dir, mem_dir, is_alias)
             if info is None:
                 continue
-            if not include_empty and info.entry_count == 0:
+            if not include_empty and info.entry_count == 0 and not info.has_index:
                 continue
             infos.append(info)
         infos.sort(key=lambda p: -p.mtime)
@@ -191,6 +191,10 @@ class MemoryStore:
                     continue
                 if f.name == "MEMORY.md":
                     has_index = True
+                    try:
+                        latest_mtime = max(latest_mtime, f.stat().st_mtime)
+                    except OSError:
+                        pass
                     continue
                 entry_count += 1
                 try:
@@ -549,6 +553,44 @@ class MemoryStore:
         # mmcc memory entry 必须形如 <project>/memory/*.md，避免误删 sessions/*.jsonl 等
         if file_path.parent.name != "memory" or file_path.suffix != ".md":
             raise ValueError(f"Not a memory entry: {file_path}")
+        file_path.unlink()
+        self._short_ids_cache = None
+        self._common_prefix_cache = None
+
+    def _resolve_index_path(self, project_id: str) -> Path:
+        project_dir = self._resolve_project_dir(project_id)
+        if project_dir is None:
+            raise NotFoundError(f"Project not found: {project_id!r}")
+        return project_dir / "memory" / "MEMORY.md"
+
+    def read_index(self, project_id: str) -> Optional[tuple[Path, str, float]]:
+        try:
+            file_path = self._resolve_index_path(project_id)
+        except NotFoundError:
+            return None
+        if not file_path.is_file():
+            return None
+        try:
+            body = file_path.read_text(encoding="utf-8")
+            mtime = file_path.stat().st_mtime
+        except (OSError, UnicodeDecodeError, PermissionError):
+            return None
+        return file_path, body, mtime
+
+    def write_index(self, project_id: str, body: str) -> Path:
+        if not isinstance(body, str):
+            raise ValueError(f"body must be string, got {body.__class__.__name__}")
+        file_path = self._resolve_index_path(project_id)
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        _atomic_write(file_path, body)
+        self._short_ids_cache = None
+        self._common_prefix_cache = None
+        return file_path
+
+    def delete_index(self, project_id: str) -> None:
+        file_path = self._resolve_index_path(project_id)
+        if not file_path.is_file():
+            raise NotFoundError(f"Index not found: {file_path}")
         file_path.unlink()
         self._short_ids_cache = None
         self._common_prefix_cache = None

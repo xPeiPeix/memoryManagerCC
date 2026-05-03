@@ -763,3 +763,129 @@ class TestCodexP2UpdateBodyType:
         target = mock_projects / "D--test-normal" / "memory" / "feedback_first.md"
         store.update_entry(target, body="new body\n")
         assert "new body" in target.read_text(encoding="utf-8")
+
+
+class TestIndexCRUD:
+    """MEMORY.md 索引文件 CRUD（与 entry 并列的独立概念）"""
+
+    def test_read_index_returns_path_body_mtime(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        result = store.read_index("D--test-normal")
+        assert result is not None
+        path, body, mtime = result
+        assert path == (mock_projects / "D--test-normal" / "memory" / "MEMORY.md").resolve() \
+            or path == mock_projects / "D--test-normal" / "memory" / "MEMORY.md"
+        assert "first feedback" in body
+        assert mtime > 0
+
+    def test_read_index_returns_none_when_missing(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        assert store.read_index("D--test-empty") is None
+        assert store.read_index("D--test-broken") is None
+
+    def test_read_index_returns_none_for_unknown_project(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        assert store.read_index("does-not-exist-foo-bar") is None
+
+    def test_read_index_resolves_short_id(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        short = store.short_id("D--test-normal")
+        result = store.read_index(short)
+        assert result is not None
+
+    def test_write_index_creates_when_missing(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target_file = mock_projects / "D--test-empty" / "memory" / "MEMORY.md"
+        assert not target_file.exists()
+        path = store.write_index("D--test-empty", "# new index\n- [x](x.md)\n")
+        assert path.exists()
+        assert "new index" in path.read_text(encoding="utf-8")
+
+    def test_write_index_overwrites_existing(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "MEMORY.md"
+        original = target.read_text(encoding="utf-8")
+        store.write_index("D--test-normal", "completely new content\n")
+        assert target.read_text(encoding="utf-8") == "completely new content\n"
+        assert original != "completely new content\n"
+
+    def test_write_index_rejects_non_string_body(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        with pytest.raises(ValueError, match="body must be"):
+            store.write_index("D--test-normal", 123)
+        with pytest.raises(ValueError, match="body must be"):
+            store.write_index("D--test-normal", ["a", "b"])
+
+    def test_write_index_creates_parent_dir(self, mock_projects: Path, tmp_path: Path):
+        # 项目目录存在但 memory/ 不存在的边缘情况
+        new_proj = mock_projects / "D--test-no-memory"
+        assert not (new_proj / "memory").exists()
+        store = MemoryStore(mock_projects)
+        path = store.write_index("D--test-no-memory", "fresh\n")
+        assert path.exists()
+        assert (new_proj / "memory").is_dir()
+
+    def test_write_index_unknown_project_raises(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        with pytest.raises(NotFoundError):
+            store.write_index("does-not-exist-foo-bar", "x\n")
+
+    def test_write_index_atomic_no_partial_on_crash(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "MEMORY.md"
+        original = target.read_text(encoding="utf-8")
+        with patch("os.replace", side_effect=OSError("simulated crash")):
+            with pytest.raises(OSError):
+                store.write_index("D--test-normal", "should not survive\n")
+        assert target.read_text(encoding="utf-8") == original
+
+    def test_delete_index_removes_file(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "MEMORY.md"
+        assert target.exists()
+        store.delete_index("D--test-normal")
+        assert not target.exists()
+
+    def test_delete_index_raises_when_missing(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        with pytest.raises(NotFoundError):
+            store.delete_index("D--test-empty")
+
+    def test_delete_index_raises_when_unknown_project(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        with pytest.raises(NotFoundError):
+            store.delete_index("does-not-exist-foo-bar")
+
+    def test_list_projects_includes_project_with_only_memory_md(self, mock_projects: Path):
+        # filter gate 修正回归: entry_count==0 但 has_index==True 不应被默认过滤
+        store = MemoryStore(mock_projects)
+        ids = {p.project_id for p in store.list_projects()}
+        assert "D--test-only-index" in ids
+        only = next(p for p in store.list_projects() if p.project_id == "D--test-only-index")
+        assert only.entry_count == 0
+        assert only.has_index is True
+
+    def test_build_project_info_mtime_includes_memory_md(self, mock_projects: Path):
+        # 修改 MEMORY.md 的 mtime 后, ProjectInfo.mtime 应该更新到该值
+        import os
+        import time
+        store = MemoryStore(mock_projects)
+        target = mock_projects / "D--test-normal" / "memory" / "MEMORY.md"
+        future = time.time() + 1000
+        os.utime(target, (future, future))
+        proj = next(p for p in store.list_projects() if p.project_id == "D--test-normal")
+        assert proj.mtime >= future - 1
+
+    def test_write_index_invalidates_caches(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        _ = store.short_id("D--test-normal")
+        assert store._short_ids_cache is not None
+        store.write_index("D--test-normal", "x\n")
+        assert store._short_ids_cache is None
+
+    def test_delete_index_invalidates_caches(self, mock_projects: Path):
+        store = MemoryStore(mock_projects)
+        _ = store.short_id("D--test-normal")
+        assert store._short_ids_cache is not None
+        store.delete_index("D--test-normal")
+        assert store._short_ids_cache is None

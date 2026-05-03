@@ -12,6 +12,7 @@ import pytest
 from mmcc.notepad import (
     _ThreadedServer,
     _find_free_port,
+    _index_payload,
     _port_in_use,
     _resolve_listen_port,
     _safe_resolve,
@@ -478,3 +479,170 @@ def test_api_entry_put_non_string_body_400(server, mock_projects):
     with pytest.raises(HTTPError) as exc_info:
         _put_json(port, {"path": str(target), "body": 123})
     assert exc_info.value.code == 400, "non-string body must return 400"
+
+
+# === MEMORY.md index CRUD HTTP tests ===
+
+def _put_index_json(port: int, payload: dict) -> dict:
+    req = Request(
+        f"http://localhost:{port}/api/index",
+        data=json.dumps(payload).encode("utf-8"),
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(req) as r:
+        return json.loads(r.read())
+
+
+def _delete_index_json(port: int, payload: dict) -> dict:
+    req = Request(
+        f"http://localhost:{port}/api/index",
+        data=json.dumps(payload).encode("utf-8"),
+        method="DELETE",
+        headers={"Content-Type": "application/json"},
+    )
+    with urlopen(req) as r:
+        return json.loads(r.read())
+
+
+def test_api_index_get_returns_payload(server, mock_projects):
+    _, port = server
+    with urlopen(f"http://localhost:{port}/api/index?project=D--test-normal") as r:
+        data = json.loads(r.read())
+    assert data["project_id"] == "D--test-normal"
+    assert "first feedback" in data["body"]
+    assert data["path"].endswith("MEMORY.md")
+    assert "project_short" in data
+    assert "project_path" in data
+    assert isinstance(data["mtime"], (int, float))
+
+
+def test_api_index_get_404_when_missing(server, mock_projects):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(f"http://localhost:{port}/api/index?project=D--test-empty")
+    assert exc_info.value.code == 404
+
+
+def test_api_index_get_404_for_unknown_project(server, mock_projects):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(f"http://localhost:{port}/api/index?project=does-not-exist-xyz")
+    assert exc_info.value.code == 404
+
+
+def test_api_index_get_400_when_missing_param(server):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(f"http://localhost:{port}/api/index")
+    assert exc_info.value.code == 400
+
+
+def test_api_index_put_creates_when_missing(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-empty" / "memory" / "MEMORY.md"
+    assert not target.exists()
+    response = _put_index_json(port, {
+        "project_id": "D--test-empty",
+        "body": "# fresh index\n- [x](feedback_x.md) — desc\n",
+    })
+    assert target.exists()
+    assert "fresh index" in target.read_text(encoding="utf-8")
+    assert response["body"] == "# fresh index\n- [x](feedback_x.md) — desc\n"
+
+
+def test_api_index_put_overwrites(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "MEMORY.md"
+    _put_index_json(port, {
+        "project_id": "D--test-normal",
+        "body": "completely replaced\n",
+    })
+    assert target.read_text(encoding="utf-8") == "completely replaced\n"
+
+
+def test_api_index_put_400_on_non_string_body(server):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        _put_index_json(port, {"project_id": "D--test-normal", "body": 123})
+    assert exc_info.value.code == 400
+
+
+def test_api_index_put_400_on_missing_project_id(server):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        _put_index_json(port, {"body": "x\n"})
+    assert exc_info.value.code == 400
+
+
+def test_api_index_put_404_on_unknown_project(server):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        _put_index_json(port, {"project_id": "does-not-exist-xyz", "body": "x\n"})
+    assert exc_info.value.code == 404
+
+
+def test_api_index_put_malformed_json_400(server):
+    _, port = server
+    req = Request(
+        f"http://localhost:{port}/api/index",
+        data=b"{not valid",
+        method="PUT",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urlopen(req) as r:
+            assert False, f"expected 400, got {r.status}"
+    except HTTPError as e:
+        assert e.code == 400
+
+
+def test_api_index_delete_removes_file(server, mock_projects):
+    _, port = server
+    target = mock_projects / "D--test-normal" / "memory" / "MEMORY.md"
+    assert target.exists()
+    _delete_index_json(port, {"project_id": "D--test-normal"})
+    assert not target.exists()
+
+
+def test_api_index_delete_then_get_404(server, mock_projects):
+    _, port = server
+    _delete_index_json(port, {"project_id": "D--test-normal"})
+    with pytest.raises(HTTPError) as exc_info:
+        urlopen(f"http://localhost:{port}/api/index?project=D--test-normal")
+    assert exc_info.value.code == 404
+
+
+def test_api_index_delete_404_when_missing(server):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        _delete_index_json(port, {"project_id": "D--test-empty"})
+    assert exc_info.value.code == 404
+
+
+def test_api_index_delete_400_on_missing_project_id(server):
+    _, port = server
+    with pytest.raises(HTTPError) as exc_info:
+        _delete_index_json(port, {})
+    assert exc_info.value.code == 400
+
+
+def test_projects_payload_includes_has_index_and_index_path(mock_projects):
+    store = MemoryStore(mock_projects)
+    payload = _projects_payload(store)
+    normal = next(p for p in payload["projects"] if p["project_id"] == "D--test-normal")
+    assert normal["has_index"] is True
+    assert normal["index_path"] is not None
+    assert normal["index_path"].endswith("MEMORY.md")
+    only_idx = next(p for p in payload["projects"] if p["project_id"] == "D--test-only-index")
+    assert only_idx["has_index"] is True
+    assert only_idx["entry_count"] == 0
+
+
+def test_api_index_resolves_short_id(server, mock_projects):
+    _, port = server
+    store = MemoryStore(mock_projects)
+    short = store.short_id("D--test-normal")
+    with urlopen(f"http://localhost:{port}/api/index?project={short}") as r:
+        data = json.loads(r.read())
+    assert data["project_id"] == "D--test-normal"

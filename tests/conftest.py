@@ -78,6 +78,13 @@ def mock_projects(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
 
+    only_index_mem = pdir / "D--test-only-index" / "memory"
+    only_index_mem.mkdir(parents=True)
+    (only_index_mem / "MEMORY.md").write_text(
+        "# Memory Index — only-index\n\n- [orphan link](feedback_orphan.md) — no real entry\n",
+        encoding="utf-8",
+    )
+
     _stagger_mtimes(pdir)
     return pdir
 

@@ -10,7 +10,8 @@ import webbrowser
 from pathlib import Path
 from typing import Optional
 
-from .store import MemoryStore
+from .paths import decode_project_dir
+from .store import MemoryStore, NotFoundError
 
 
 def _port_in_use(host: str, port: int) -> bool:
@@ -65,12 +66,15 @@ def _projects_payload(store: MemoryStore) -> dict:
     entries = store.list_entries()
     grouped: dict = {}
     for p in projects:
+        index_path = str(p.memory_dir / "MEMORY.md") if (p.has_index and p.memory_dir) else None
         grouped[p.project_id] = {
             "project_id": p.project_id,
             "short_id": store.short_id(p.project_id),
             "project_path": p.project_path,
             "entry_count": p.entry_count,
             "mtime": p.mtime,
+            "has_index": p.has_index,
+            "index_path": index_path,
             "entries": [],
         }
     for e in entries:
@@ -109,6 +113,22 @@ def _entry_payload(store: MemoryStore, target: Path) -> Optional[dict]:
     }
 
 
+def _index_payload(store: MemoryStore, project_id: str) -> Optional[dict]:
+    result = store.read_index(project_id)
+    if result is None:
+        return None
+    file_path, body, mtime = result
+    full_id = file_path.parent.parent.name
+    return {
+        "project_id": full_id,
+        "project_short": store.short_id(full_id),
+        "project_path": decode_project_dir(full_id) or full_id,
+        "path": str(file_path),
+        "body": body,
+        "mtime": mtime,
+    }
+
+
 def make_handler(store: MemoryStore, projects_root: Path):
     class NotepadHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:
@@ -121,14 +141,23 @@ def make_handler(store: MemoryStore, projects_root: Path):
             elif path == "/api/entry":
                 qs = urllib.parse.parse_qs(parsed.query)
                 self._handle_entry(qs.get("path", [""])[0])
+            elif path == "/api/index":
+                qs = urllib.parse.parse_qs(parsed.query)
+                self._handle_index(qs.get("project", [""])[0])
             else:
                 self._serve_json({"error": "not found"}, 404)
 
         def do_PUT(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
-            if parsed.path != "/api/entry":
-                self._serve_json({"error": "not found"}, 404)
+            if parsed.path == "/api/entry":
+                self._handle_entry_put()
                 return
+            if parsed.path == "/api/index":
+                self._handle_index_put()
+                return
+            self._serve_json({"error": "not found"}, 404)
+
+        def _handle_entry_put(self) -> None:
             payload = self._read_json_body()
             if payload is None:
                 self._serve_json({"error": "malformed JSON body"}, 400)
@@ -152,11 +181,40 @@ def make_handler(store: MemoryStore, projects_root: Path):
                 return
             self._serve_json(_entry_payload(store, entry.file_path) or {"ok": True})
 
+        def _handle_index_put(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                self._serve_json({"error": "malformed JSON body"}, 400)
+                return
+            pid = payload.get("project_id")
+            body = payload.get("body")
+            if not isinstance(pid, str) or not pid:
+                self._serve_json({"error": "missing project_id"}, 400)
+                return
+            try:
+                store.write_index(pid, body)
+            except ValueError as e:
+                self._serve_json({"error": str(e)}, 400)
+                return
+            except NotFoundError as e:
+                self._serve_json({"error": str(e)}, 404)
+                return
+            except OSError as e:
+                self._serve_json({"error": str(e)}, 400)
+                return
+            self._serve_json(_index_payload(store, pid) or {"ok": True})
+
         def do_DELETE(self) -> None:
             parsed = urllib.parse.urlparse(self.path)
-            if parsed.path != "/api/entry":
-                self._serve_json({"error": "not found"}, 404)
+            if parsed.path == "/api/entry":
+                self._handle_entry_delete()
                 return
+            if parsed.path == "/api/index":
+                self._handle_index_delete()
+                return
+            self._serve_json({"error": "not found"}, 404)
+
+        def _handle_entry_delete(self) -> None:
             payload = self._read_json_body()
             if payload is None:
                 self._serve_json({"error": "malformed JSON body"}, 400)
@@ -176,6 +234,25 @@ def make_handler(store: MemoryStore, projects_root: Path):
                 self._serve_json({"error": str(e)}, 400)
                 return
             self._serve_json({"ok": True, "deleted": str(target)})
+
+        def _handle_index_delete(self) -> None:
+            payload = self._read_json_body()
+            if payload is None:
+                self._serve_json({"error": "malformed JSON body"}, 400)
+                return
+            pid = payload.get("project_id")
+            if not isinstance(pid, str) or not pid:
+                self._serve_json({"error": "missing project_id"}, 400)
+                return
+            try:
+                store.delete_index(pid)
+            except NotFoundError as e:
+                self._serve_json({"error": str(e)}, 404)
+                return
+            except OSError as e:
+                self._serve_json({"error": str(e)}, 400)
+                return
+            self._serve_json({"ok": True, "project_id": pid})
 
         def _read_json_body(self) -> Optional[dict]:
             length = int(self.headers.get("Content-Length", 0) or 0)
@@ -209,6 +286,16 @@ def make_handler(store: MemoryStore, projects_root: Path):
             payload = _entry_payload(store, target)
             if payload is None:
                 self._serve_json({"error": "not found or unparseable"}, 404)
+                return
+            self._serve_json(payload)
+
+        def _handle_index(self, project_id: str) -> None:
+            if not project_id:
+                self._serve_json({"error": "missing project"}, 400)
+                return
+            payload = _index_payload(store, project_id)
+            if payload is None:
+                self._serve_json({"error": "index not found"}, 404)
                 return
             self._serve_json(payload)
 
@@ -297,6 +384,7 @@ _INDEX_HTML = r"""<!DOCTYPE html>
     --type-project: #2563eb;  --type-project-bg: #eff4ff;
     --type-reference: #7c3aed;--type-reference-bg: #f3eefe;
     --type-unknown: #6b7280;  --type-unknown-bg: #f3f4f6;
+    --type-index: #0891b2;    --type-index-bg: #ecfeff;
     --code-inline-fg: #b91c5c;
   }
   html, body { margin: 0; padding: 0; height: 100%;
@@ -387,11 +475,15 @@ _INDEX_HTML = r"""<!DOCTYPE html>
   .glyph.t-project   { background: var(--type-project-bg);   color: var(--type-project); }
   .glyph.t-reference { background: var(--type-reference-bg); color: var(--type-reference); }
   .glyph.t-unknown   { background: var(--type-unknown-bg);   color: var(--type-unknown); }
+  .glyph.t-index     { background: var(--type-index-bg);     color: var(--type-index); }
   .pill.t-feedback  { background: var(--type-feedback-bg);  color: var(--type-feedback); }
   .pill.t-user      { background: var(--type-user-bg);      color: var(--type-user); }
   .pill.t-project   { background: var(--type-project-bg);   color: var(--type-project); }
   .pill.t-reference { background: var(--type-reference-bg); color: var(--type-reference); }
   .pill.t-unknown   { background: var(--type-unknown-bg);   color: var(--type-unknown); }
+  .pill.t-index     { background: var(--type-index-bg);     color: var(--type-index); }
+  .entry.index-row  { font-style: italic; }
+  .entry.index-row .ename { color: var(--type-index); }
 
   /* Main viewer */
   .viewer { max-width: 780px; margin: 0 auto; padding: 36px 56px 80px; }
@@ -520,12 +612,18 @@ _INDEX_HTML = r"""<!DOCTYPE html>
 // XSS guard — strip raw HTML from rendered markdown bodies (CLAUDE.md hard constraint)
 marked.use({ renderer: { html() { return ''; } } });
 
-const TYPE_GLYPH = { feedback: 'F', user: 'U', project: 'P', reference: 'R', unknown: '?' };
-const TYPE_LABEL = { feedback: 'feedback', user: 'user', project: 'project', reference: 'reference', unknown: 'note' };
+const TYPE_GLYPH = { feedback: 'F', user: 'U', project: 'P', reference: 'R', unknown: '?', index: '📋' };
+const TYPE_LABEL = { feedback: 'feedback', user: 'user', project: 'project', reference: 'reference', unknown: 'note', index: 'index' };
 
 let projects = [];
+// selected: null | {kind: 'entry', payload: {...}} | {kind: 'index', payload: {...}}
 let selected = null;
 let mode = 'view';
+
+function selectedFilePath() {
+  if (!selected) return null;
+  return selected.kind === 'entry' ? selected.payload.file_path : selected.payload.path;
+}
 
 async function loadProjects() {
   try {
@@ -551,15 +649,22 @@ function renderTree() {
       const hay = (e.name + ' ' + (e.description || '') + ' ' + e.filename).toLowerCase();
       return hay.includes(search);
     });
-    if (matched.length === 0) continue;
-    totalShown += matched.length;
+    // 索引不属于 4 个 type 之一, 不被类型 tab 过滤; 仅响应 search 关键字
+    let showIndexRow = false;
+    if (p.has_index) {
+      if (!search) showIndexRow = true;
+      else if ('索引 memory.md index'.toLowerCase().includes(search)) showIndexRow = true;
+    }
+    if (matched.length === 0 && !showIndexRow) continue;
+    totalShown += matched.length + (showIndexRow ? 1 : 0);
 
     const projDiv = document.createElement('div');
     projDiv.className = 'project-row open';
+    const pcount = matched.length + (showIndexRow ? 1 : 0);
     projDiv.innerHTML =
       '<svg class="chev" viewBox="0 0 10 10"><path d="M3 2l4 3-4 3z" fill="currentColor"/></svg>' +
       '<span class="pname">' + escapeHTML(p.short_id) + '</span>' +
-      '<span class="pcount">' + matched.length + '</span>';
+      '<span class="pcount">' + pcount + '</span>';
     projDiv.onclick = () => {
       projDiv.classList.toggle('collapsed');
       projDiv.classList.toggle('open');
@@ -568,9 +673,24 @@ function renderTree() {
 
     const wrap = document.createElement('div');
     wrap.className = 'entries-wrap';
+
+    if (showIndexRow) {
+      const idxRow = document.createElement('div');
+      idxRow.className = 'entry index-row';
+      idxRow.dataset.kind = 'index';
+      idxRow.dataset.projectId = p.project_id;
+      idxRow.innerHTML =
+        '<span class="glyph t-index">' + TYPE_GLYPH.index + '</span>' +
+        '<span class="ename">索引 (MEMORY.md)</span>';
+      idxRow.title = p.index_path || 'MEMORY.md';
+      idxRow.onclick = () => selectIndex(p.project_id);
+      wrap.appendChild(idxRow);
+    }
+
     for (const e of matched) {
       const row = document.createElement('div');
       row.className = 'entry';
+      row.dataset.kind = 'entry';
       row.dataset.path = e.file_path;
       const tkey = TYPE_GLYPH[e.type] ? e.type : 'unknown';
       const glyph = TYPE_GLYPH[tkey];
@@ -589,14 +709,20 @@ function renderTree() {
   }
   if (selected) {
     document.querySelectorAll('.entry').forEach(el => {
-      el.classList.toggle('selected', el.dataset.path === selected.file_path);
+      let match = false;
+      if (selected.kind === 'entry' && el.dataset.kind === 'entry') {
+        match = el.dataset.path === selected.payload.file_path;
+      } else if (selected.kind === 'index' && el.dataset.kind === 'index') {
+        match = el.dataset.projectId === selected.payload.project_id;
+      }
+      el.classList.toggle('selected', match);
     });
   }
 }
 
 async function selectEntry(filePath) {
   document.querySelectorAll('.entry').forEach(el => {
-    el.classList.toggle('selected', el.dataset.path === filePath);
+    el.classList.toggle('selected', el.dataset.kind === 'entry' && el.dataset.path === filePath);
   });
   try {
     const r = await fetch('/api/entry?path=' + encodeURIComponent(filePath));
@@ -604,7 +730,27 @@ async function selectEntry(filePath) {
       document.getElementById('viewer').innerHTML = '<div class="empty">加载失败：' + r.status + '</div>';
       return;
     }
-    selected = await r.json();
+    const payload = await r.json();
+    selected = { kind: 'entry', payload };
+    mode = 'view';
+    renderEntry();
+  } catch (err) {
+    document.getElementById('viewer').innerHTML = '<div class="empty">网络错误：' + escapeHTML(err.message) + '</div>';
+  }
+}
+
+async function selectIndex(projectId) {
+  document.querySelectorAll('.entry').forEach(el => {
+    el.classList.toggle('selected', el.dataset.kind === 'index' && el.dataset.projectId === projectId);
+  });
+  try {
+    const r = await fetch('/api/index?project=' + encodeURIComponent(projectId));
+    if (!r.ok) {
+      document.getElementById('viewer').innerHTML = '<div class="empty">加载失败：' + r.status + '</div>';
+      return;
+    }
+    const payload = await r.json();
+    selected = { kind: 'index', payload };
     mode = 'view';
     renderEntry();
   } catch (err) {
@@ -616,18 +762,21 @@ function renderEntry() {
   const v = document.getElementById('viewer');
   v.innerHTML = '';
   if (!selected) { v.innerHTML = '<div class="empty">未选中任何条目</div>'; return; }
-  const e = selected;
+  const e = selected.payload;
+  const isIndex = selected.kind === 'index';
   const wrap = document.createElement('div');
   wrap.className = 'viewer';
 
-  const tkey = TYPE_GLYPH[e.type] ? e.type : 'unknown';
+  const tkey = isIndex ? 'index' : (TYPE_GLYPH[e.type] ? e.type : 'unknown');
+  const filename = isIndex ? 'MEMORY.md' : e.filename;
+  const titleText = isIndex ? '索引 (MEMORY.md)' : e.name;
 
   const crumb = document.createElement('div');
   crumb.className = 'breadcrumb';
   crumb.innerHTML =
     '<span>' + escapeHTML(e.project_short || e.project_path || '') + '</span>' +
     '<span>/</span><span>memory</span><span>/</span>' +
-    '<span class="last">' + escapeHTML(e.filename) + '</span>';
+    '<span class="last">' + escapeHTML(filename) + '</span>';
   wrap.appendChild(crumb);
 
   const pillWrap = document.createElement('div');
@@ -636,24 +785,26 @@ function renderEntry() {
 
   const title = document.createElement('h1');
   title.className = 'title';
-  title.textContent = e.name;
+  title.textContent = titleText;
   wrap.appendChild(title);
 
-  if (e.description) {
+  if (!isIndex && e.description) {
     const desc = document.createElement('p');
     desc.className = 'desc';
     desc.textContent = e.description;
     wrap.appendChild(desc);
   }
 
-  if (mode === 'view') renderViewMode(wrap, e);
-  else if (mode === 'edit') renderEditMode(wrap, e);
-  else if (mode === 'confirm-delete') renderConfirmDelete(wrap, e);
+  if (mode === 'view') renderViewMode(wrap, e, isIndex);
+  else if (mode === 'edit') renderEditMode(wrap, e, isIndex);
+  else if (mode === 'confirm-delete') renderConfirmDelete(wrap, e, isIndex);
 
   v.appendChild(wrap);
 }
 
-function renderViewMode(wrap, e) {
+function renderViewMode(wrap, e, isIndex) {
+  const filePath = isIndex ? e.path : e.file_path;
+
   const tb = document.createElement('div');
   tb.className = 'toolbar';
 
@@ -664,7 +815,7 @@ function renderViewMode(wrap, e) {
   const btnVS = document.createElement('a');
   btnVS.className = 'btn';
   btnVS.textContent = '在 VSCode 打开';
-  btnVS.href = 'vscode://file/' + (e.file_path || '').replace(/\\/g, '/');
+  btnVS.href = 'vscode://file/' + (filePath || '').replace(/\\/g, '/');
 
   const spacer = document.createElement('span');
   spacer.style.flex = '1';
@@ -684,28 +835,70 @@ function renderViewMode(wrap, e) {
   body.className = 'body';
   body.innerHTML = marked.parse(e.body || '');
   wrap.appendChild(body);
+
+  if (isIndex) {
+    body.addEventListener('click', handleIndexLinkClick);
+  }
 }
 
-function renderEditMode(wrap, e) {
+function handleIndexLinkClick(ev) {
+  const a = ev.target.closest('a'); if (!a) return;
+  const href = a.getAttribute('href') || '';
+  // 外部 http(s) 链接: 新 tab 打开
+  if (/^https?:\/\//i.test(href)) {
+    a.target = '_blank';
+    a.rel = 'noopener';
+    return;
+  }
+  // 危险协议 / 锚点: 直接拒绝默认行为
+  if (href.startsWith('#') || /^(javascript|data|file|vbscript):/i.test(href)) {
+    ev.preventDefault();
+    return;
+  }
+  // 内部 .md 链接: 拦截并切换到对应条目或索引
+  const m = /^([^?#]+\.md)(\?.*)?(#.*)?$/i.exec(href);
+  if (!m) return;
+  ev.preventDefault();
+  if (!selected || selected.kind !== 'index') return;
+  let filename;
+  try { filename = decodeURIComponent(m[1]); } catch (_) { filename = m[1]; }
+  if (filename.toLowerCase() === 'memory.md') {
+    selectIndex(selected.payload.project_id);
+    return;
+  }
+  const indexPath = selected.payload.path || '';
+  const sep = indexPath.includes('\\') ? '\\' : '/';
+  const dir = indexPath.substring(0, indexPath.lastIndexOf(sep));
+  if (!dir) return;
+  selectEntry(dir + sep + filename);
+}
+
+function renderEditMode(wrap, e, isIndex) {
   // wrap 在 renderEntry 末尾才 appendChild 到 viewer, 这里仍是 detached node;
   // 用闭包变量赋 value, 不要走 document.getElementById (会返回 null)
   const editor = document.createElement('div');
   editor.className = 'editor';
 
-  const lblName = document.createElement('label'); lblName.textContent = 'name';
-  const inpName = document.createElement('input');
-  inpName.id = 'inp-name'; inpName.value = e.name || '';
+  let inpName, inpDesc, inpBody;
 
-  const lblDesc = document.createElement('label'); lblDesc.textContent = 'description';
-  const inpDesc = document.createElement('input');
-  inpDesc.id = 'inp-desc'; inpDesc.value = e.description || '';
+  if (!isIndex) {
+    const lblName = document.createElement('label'); lblName.textContent = 'name';
+    inpName = document.createElement('input');
+    inpName.id = 'inp-name'; inpName.value = e.name || '';
 
-  const lblBody = document.createElement('label'); lblBody.textContent = 'body (markdown)';
-  const inpBody = document.createElement('textarea');
+    const lblDesc = document.createElement('label'); lblDesc.textContent = 'description';
+    inpDesc = document.createElement('input');
+    inpDesc.id = 'inp-desc'; inpDesc.value = e.description || '';
+
+    editor.appendChild(lblName); editor.appendChild(inpName);
+    editor.appendChild(lblDesc); editor.appendChild(inpDesc);
+  }
+
+  const lblBody = document.createElement('label');
+  lblBody.textContent = isIndex ? 'MEMORY.md (raw markdown)' : 'body (markdown)';
+  inpBody = document.createElement('textarea');
   inpBody.id = 'inp-body'; inpBody.value = e.body || '';
 
-  editor.appendChild(lblName); editor.appendChild(inpName);
-  editor.appendChild(lblDesc); editor.appendChild(inpDesc);
   editor.appendChild(lblBody); editor.appendChild(inpBody);
   wrap.appendChild(editor);
 
@@ -721,13 +914,18 @@ function renderEditMode(wrap, e) {
   tb.appendChild(save); tb.appendChild(cancel);
   wrap.appendChild(tb);
 
-  setTimeout(() => inpName.focus(), 0);
+  setTimeout(() => (isIndex ? inpBody : inpName).focus(), 0);
 }
 
-function renderConfirmDelete(wrap, e) {
+function renderConfirmDelete(wrap, e, isIndex) {
+  const filePath = isIndex ? e.path : e.file_path;
   const c = document.createElement('div');
   c.className = 'confirm';
-  c.innerHTML = '确认删除 <code>' + escapeHTML(e.file_path) + '</code> ？此操作不可撤销。';
+  if (isIndex) {
+    c.innerHTML = '确认删除 <code>' + escapeHTML(filePath) + '</code> ？删除后该项目的索引文件 MEMORY.md 将丢失，需要重新手动维护。此操作不可撤销。';
+  } else {
+    c.innerHTML = '确认删除 <code>' + escapeHTML(filePath) + '</code> ？此操作不可撤销。';
+  }
   wrap.appendChild(c);
   const tb = document.createElement('div');
   tb.className = 'toolbar';
@@ -759,14 +957,24 @@ function formatMtime(mtime) {
 
 async function saveEdit() {
   if (!selected) return;
-  const payload = {
-    path: selected.file_path,
-    name: document.getElementById('inp-name').value,
-    description: document.getElementById('inp-desc').value,
-    body: document.getElementById('inp-body').value,
-  };
+  const isIndex = selected.kind === 'index';
+  const url = isIndex ? '/api/index' : '/api/entry';
+  let payload;
+  if (isIndex) {
+    payload = {
+      project_id: selected.payload.project_id,
+      body: document.getElementById('inp-body').value,
+    };
+  } else {
+    payload = {
+      path: selected.payload.file_path,
+      name: document.getElementById('inp-name').value,
+      description: document.getElementById('inp-desc').value,
+      body: document.getElementById('inp-body').value,
+    };
+  }
   try {
-    const r = await fetch('/api/entry', {
+    const r = await fetch(url, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
@@ -776,7 +984,8 @@ async function saveEdit() {
       alert('保存失败：' + r.status + ' ' + (err.error || ''));
       return;
     }
-    selected = await r.json();
+    const updated = await r.json();
+    selected = { kind: isIndex ? 'index' : 'entry', payload: updated };
     mode = 'view';
     renderEntry();
     loadProjects();
@@ -787,11 +996,16 @@ async function saveEdit() {
 
 async function confirmDelete() {
   if (!selected) return;
+  const isIndex = selected.kind === 'index';
+  const url = isIndex ? '/api/index' : '/api/entry';
+  const body = isIndex
+    ? { project_id: selected.payload.project_id }
+    : { path: selected.payload.file_path };
   try {
-    const r = await fetch('/api/entry', {
+    const r = await fetch(url, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: selected.file_path }),
+      body: JSON.stringify(body),
     });
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
@@ -800,7 +1014,8 @@ async function confirmDelete() {
     }
     selected = null;
     mode = 'view';
-    document.getElementById('viewer').innerHTML = '<div class="empty">条目已删除</div>';
+    document.getElementById('viewer').innerHTML =
+      '<div class="empty">' + (isIndex ? '索引已删除' : '条目已删除') + '</div>';
     loadProjects();
   } catch (err) {
     alert('网络错误：' + err.message);
@@ -808,8 +1023,9 @@ async function confirmDelete() {
 }
 
 function copyPath() {
-  if (!selected) return;
-  navigator.clipboard.writeText(selected.file_path).catch(() => alert('复制失败'));
+  const fp = selectedFilePath();
+  if (!fp) return;
+  navigator.clipboard.writeText(fp).catch(() => alert('复制失败'));
 }
 
 function escapeHTML(s) {
@@ -834,7 +1050,11 @@ async function refreshAll() {
   // 编辑/删除确认中保护用户未提交的输入, 仅刷新左侧树; view 模式才重拉当前条目
   await loadProjects();
   if (selected && mode === 'view') {
-    await selectEntry(selected.file_path);
+    if (selected.kind === 'index') {
+      await selectIndex(selected.payload.project_id);
+    } else {
+      await selectEntry(selected.payload.file_path);
+    }
   }
 }
 
